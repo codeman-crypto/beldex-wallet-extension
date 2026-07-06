@@ -60,84 +60,30 @@ async function touchAutoLock() {
   chrome.alarms.create(ALARM_LOCK, { delayInMinutes: await autoLockMinutes() })
 }
 
-// ---- background sync + notifications -----------------------------------------
-
-const NOTIF_KEY = 'notifications_enabled' // user toggle (Settings), default on
-const WATCH_KEY = 'watch_confirm'         // sent-tx hashes awaiting confirmation
-const SEEN_KEY = 'seen_txs'               // tx hashes already processed (session)
-const PENDING_KEY = 'pending_txs'         // written by the panel on each send
-const WATCH_TTL_MS = 24 * 3600 * 1000
-
-async function notificationsEnabled(): Promise<boolean> {
-  const o = await chrome.storage.local.get(NOTIF_KEY)
-  return o[NOTIF_KEY] !== false // default: on
-}
-
-/** True while our side panel is open anywhere (Chrome 116+; assume closed if undetectable). */
-async function isPanelOpen(): Promise<boolean> {
-  try {
-    const ctxs = await (chrome.runtime as any).getContexts({ contextTypes: ['SIDE_PANEL'] })
-    return Array.isArray(ctxs) && ctxs.length > 0
-  } catch {
-    return false
-  }
-}
-
-function notify(title: string, message: string) {
-  chrome.notifications.create({ type: 'basic', iconUrl: 'icons/icon128.png', title, message })
-}
+// ---- background sync ----------------------------------------------------------
 
 async function syncOnce(): Promise<void> {
   const s = await getSession()
   if (!s) { chrome.alarms.clear(ALARM_SYNC); return }
   try {
-    const creds = { address: s.address, view_key: s.secViewKey }
-    const [info, txsRes] = await Promise.all([lws.getAddressInfo(creds), lws.getAddressTxs(creds)])
+    const info = await lws.getAddressInfo({ address: s.address, view_key: s.secViewKey })
+    const prevCache = (await chrome.storage.session.get(CACHE_KEY))[CACHE_KEY]
     await chrome.storage.session.set({ [CACHE_KEY]: { info, at: Date.now() } })
 
-    const txs: any[] = txsRes.transactions ?? []
-    // Only notify when the user wants it AND the panel is closed (it shows live state itself).
-    const canNotify = (await notificationsEnabled()) && !(await isPanelOpen())
-
-    // --- sent-transaction confirmations ---
-    // The panel records every send in PENDING_KEY; adopt those hashes into our own
-    // watch list (the panel prunes its list as soon as the server indexes the tx,
-    // which can be before it's mined — we keep watching until confirmed).
-    const watch: Record<string, number> =
-      (await chrome.storage.local.get(WATCH_KEY))[WATCH_KEY] ?? {}
-    const pending: Array<{ hash: string }> =
-      (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] ?? []
-    for (const p of pending) if (!(p.hash in watch)) watch[p.hash] = Date.now()
-
-    for (const hash of Object.keys(watch)) {
-      if (Date.now() - watch[hash] > WATCH_TTL_MS) { delete watch[hash]; continue }
-      const tx = txs.find(t => t.hash === hash)
-      if (tx && !tx.mempool && Number(tx.height ?? 0) > 0) {
-        if (canNotify) {
-          notify('Transaction confirmed', `Sent tx ${hash.slice(0, 10)}… was mined in block ${Number(tx.height).toLocaleString()}`)
-        }
-        delete watch[hash]
-      }
+    // Notify on new incoming funds. Heuristic: total_received also grows from
+    // change returned by our own outgoing txs, so skip when total_sent grew too.
+    const prevReceived = Number(prevCache?.info?.total_received ?? NaN)
+    const prevSent = Number(prevCache?.info?.total_sent ?? NaN)
+    const nowReceived = Number(info.total_received ?? 0)
+    const nowSent = Number(info.total_sent ?? 0)
+    if (!Number.isNaN(prevReceived) && nowReceived > prevReceived && nowSent <= prevSent) {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/icon128.png',
+        title: 'Beldex Wallet',
+        message: `Received ${((nowReceived - prevReceived) / ATOMIC).toFixed(4)} BDX`
+      })
     }
-    await chrome.storage.local.set({ [WATCH_KEY]: watch })
-
-    // --- incoming funds ---
-    // Notify on any previously-unseen tx that only receives (a tx that also spends
-    // is our own send returning change). First sync after browser start seeds the
-    // seen-set silently so old history doesn't spam notifications.
-    const seenRaw: string[] | undefined = (await chrome.storage.session.get(SEEN_KEY))[SEEN_KEY]
-    if (seenRaw) {
-      const seen = new Set(seenRaw)
-      for (const tx of txs) {
-        if (seen.has(tx.hash)) continue
-        const recv = Number(tx.total_received ?? 0)
-        const sent = Number(tx.total_sent ?? 0)
-        if (recv > 0 && sent === 0 && canNotify) {
-          notify('BDX received', `+${(recv / ATOMIC).toFixed(4)} BDX arrived in your wallet`)
-        }
-      }
-    }
-    await chrome.storage.session.set({ [SEEN_KEY]: txs.map(t => t.hash) })
   } catch {
     // network/LWS hiccup — next alarm will retry
   }

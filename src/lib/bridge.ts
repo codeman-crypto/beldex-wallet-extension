@@ -70,6 +70,18 @@ export async function generateKeyImage(
   return r.retVal ?? r
 }
 
+/**
+ * Unique receiving address: primary address + random short payment ID baked in
+ * (integrated address). The LWS tracks these against the primary address, unlike
+ * true subaddresses which this light-wallet stack cannot scan for.
+ */
+export async function newIntegratedAddress(primaryAddress: string): Promise<{ address: string; paymentId: string }> {
+  const bridge = await getBridge()
+  const paymentId: string = bridge.new_payment_id()
+  const address: string = bridge.new__int_addr_from_addr_and_short_pid(primaryAddress, paymentId, CONFIG.NETTYPE)
+  return { address, paymentId }
+}
+
 export async function estimatedTxFee(feePerB: string, priority: number, forkVersion: number): Promise<string> {
   const bridge = await getBridge()
   const r = bridge.estimated_tx_network_fee(null, priority, feePerB) // verify arg order against MyMoneroCoreBridgeEssentialsClass

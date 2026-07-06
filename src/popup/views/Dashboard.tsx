@@ -6,6 +6,7 @@ import { sendFunds, SEND_STEPS } from '../../lib/send'
 import { Settings } from './Settings'
 import { Receive } from './Receive'
 import { truncateMiddle } from '../../lib/format'
+import { getBdxPriceUsdt } from '../../lib/price'
 
 const ATOMIC = 1e9 // 1 BDX = 1e9 atomic units
 const POLL_MS = 10_000 // Beldex block time ~30s; poll LWS every 10s while popup is open
@@ -71,6 +72,7 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
   const [refreshing, setRefreshing] = useState(false)
   const [copied, setCopied] = useState(false)
   const [hideBalance, setHideBalance] = useState(() => localStorage.getItem('hideBalance') === '1')
+  const [price, setPrice] = useState<number | null>(null)
   const [txFilter, setTxFilter] = useState<TxFilter>('all')
   const [selectedTx, setSelectedTx] = useState<Tx | null>(null)
   const [txHashCopied, setTxHashCopied] = useState(false)
@@ -92,6 +94,7 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
 
   const refresh = async (c: lws.Credentials) => {
     setRefreshing(true)
+    getBdxPriceUsdt().then(p => p !== null && setPrice(p)) // 60s-cached; fire-and-forget
     try {
       const [i, t] = await Promise.all([lws.getAddressInfo(c), lws.getAddressTxs(c)])
 
@@ -230,8 +233,9 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
       </div>
 
       {view === 'settings' && <Settings onBack={() => setView('home')} onWiped={onLocked} />}
+      {view === 'receive' && <Receive address={address} onBack={() => setView('home')} />}
 
-      {view !== 'settings' && <>
+      {view !== 'settings' && view !== 'receive' && <>
       <div className="card balance-card">
         <div className="sync">
           {info
@@ -254,6 +258,12 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
             )}
           </button>
         </div>
+        {price !== null && (
+          <div className="fiat">
+            {balance !== null && <>≈ <b>{mask((balance / ATOMIC * price).toFixed(2))} USDT</b> · </>}
+            1 BDX = {price.toFixed(4)} USDT
+          </div>
+        )}
         <div className="sub-balances">
           <span>Unlocked <b className="ok">{unlocked === null ? '—' : mask(fmtBDX(unlocked))}</b></span>
           <span>Locked <b className="warn">{balance === null ? '—' : mask(fmtBDX(locked))}</b></span>
@@ -317,8 +327,6 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
           </div>
         </>
       )}
-
-      {view === 'receive' && <Receive address={address} onBack={() => setView('home')} />}
 
       {view === 'send' && (
         <div className="card">

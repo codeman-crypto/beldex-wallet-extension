@@ -96,6 +96,14 @@
         margin: 10px 0 4px;
       }
       .balance .unit { font-size: 12px; color: var(--green); }
+      /* receive view fits the viewport; scrolls internally if it can't */
+      .receive-card {
+        flex: 1 1 0px; min-height: 100px;
+        overflow-y: auto; margin-bottom: 0;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+      }
+      .receive-card > * { flex: none; width: 100%; }
+      .receive-card .qr-box { width: auto; }
       .qr-box {
         display: inline-block; background: #ffffff; padding: 10px;
         border: 1px solid var(--border); line-height: 0;
@@ -105,6 +113,8 @@
         padding: 2px 4px; margin-left: 6px; vertical-align: middle; line-height: 0;
       }
       .eye-btn:hover { color: var(--green); }
+      .fiat { font-size: 10.5px; color: var(--text-dim); margin: -2px 0 8px; }
+      .fiat b { color: var(--text); }
       .sub-balances {
         display: flex; justify-content: center; gap: 18px;
         font-size: 10.5px; color: var(--text-dim); margin-bottom: 10px;
@@ -201,19 +211,6 @@
       .menu-item .chev { color: var(--text-dim); }
       .menu-item.danger { color: var(--red); }
       .menu-item.danger:hover { background: rgba(255, 92, 92, 0.06); }
-
-      .switch {
-        width: 30px; height: 16px; flex: none;
-        background: #1c1c1c; border: 1px solid var(--border);
-        display: inline-flex; align-items: center; padding: 1px;
-        transition: background 0.15s, border-color 0.15s;
-      }
-      .switch .knob {
-        width: 12px; height: 12px; background: var(--text-dim);
-        transition: transform 0.15s, background 0.15s;
-      }
-      .switch.on { border-color: var(--green); }
-      .switch.on .knob { transform: translateX(14px); background: var(--green); }
 
       .btn-danger {
         background: transparent; color: var(--red);

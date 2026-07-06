@@ -60,23 +60,11 @@ export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () 
 
   // auto-lock duration
   const [autoLock, setAutoLock] = useState<number | null>(null)
-  // notifications toggle (default on)
-  const [notifOn, setNotifOn] = useState(true)
   useEffect(() => {
     sendToBackground({ type: 'GET_AUTOLOCK' }).then(r => {
       if (r.ok && r.minutes) setAutoLock(r.minutes)
     })
-    chrome.storage.local.get('notifications_enabled').then(o => {
-      setNotifOn(o['notifications_enabled'] !== false)
-    })
   }, [])
-
-  const toggleNotif = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    const next = !notifOn
-    setNotifOn(next)
-    await chrome.storage.local.set({ notifications_enabled: next })
-  }
 
   // auto-hide countdown for revealed secrets
   const [secondsLeft, setSecondsLeft] = useState(REVEAL_SECONDS)
@@ -279,10 +267,6 @@ export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () 
       </div>
       <div className="menu-item" onClick={() => go('password')}>
         <span>Change Password</span><span className="chev">›</span>
-      </div>
-      <div className="menu-item" onClick={toggleNotif}>
-        <span>Notifications</span>
-        <span className={`switch ${notifOn ? 'on' : ''}`}><span className="knob" /></span>
       </div>
       <div className="menu-item" onClick={() => go('autolock')}>
         <span>Auto-Lock {autoLock ? `(${autoLock >= 60 ? `${autoLock / 60}h` : `${autoLock}m`})` : ''}</span>
