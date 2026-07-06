@@ -1,0 +1,299 @@
+import { useEffect, useState } from 'react'
+import { sendToBackground, WalletSecrets } from '../../lib/messages'
+import { truncateMiddle } from '../../lib/format'
+
+const REVEAL_SECONDS = 30 // revealed secrets auto-hide after this long
+
+type Item = 'menu' | 'seed' | 'viewKey' | 'spendKey' | 'password' | 'autolock' | 'delete'
+
+const AUTOLOCK_OPTIONS = [5, 15, 30, 60] // minutes
+
+function EyeIcon({ off }: { off: boolean }) {
+  return off ? (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+      <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  ) : (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+
+const SECRET_LABELS: Record<string, { title: string; field: keyof WalletSecrets; note: string }> = {
+  seed: {
+    title: 'Recovery Seed',
+    field: 'mnemonic',
+    note: 'Anyone with these 25 words can spend your funds. Never share them.'
+  },
+  viewKey: {
+    title: 'Private View Key',
+    field: 'secViewKey',
+    note: 'Allows viewing incoming transactions. Cannot spend funds.'
+  },
+  spendKey: {
+    title: 'Private Spend Key',
+    field: 'secSpendKey',
+    note: 'Anyone with this key can spend your funds. Never share it.'
+  }
+}
+
+export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () => void }) {
+  const [item, setItem] = useState<Item>('menu')
+  const [password, setPassword] = useState('')
+  const [revealed, setRevealed] = useState<WalletSecrets | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [error, setError] = useState('')
+  const [okMsg, setOkMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  // change password form
+  const [newPw, setNewPw] = useState('')
+  const [confirmPw, setConfirmPw] = useState('')
+
+  // delete confirmation modal
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+
+  // secrets stay masked until the user explicitly reveals them with the eye
+  const [valueVisible, setValueVisible] = useState(false)
+
+  // auto-lock duration
+  const [autoLock, setAutoLock] = useState<number | null>(null)
+  // notifications toggle (default on)
+  const [notifOn, setNotifOn] = useState(true)
+  useEffect(() => {
+    sendToBackground({ type: 'GET_AUTOLOCK' }).then(r => {
+      if (r.ok && r.minutes) setAutoLock(r.minutes)
+    })
+    chrome.storage.local.get('notifications_enabled').then(o => {
+      setNotifOn(o['notifications_enabled'] !== false)
+    })
+  }, [])
+
+  const toggleNotif = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const next = !notifOn
+    setNotifOn(next)
+    await chrome.storage.local.set({ notifications_enabled: next })
+  }
+
+  // auto-hide countdown for revealed secrets
+  const [secondsLeft, setSecondsLeft] = useState(REVEAL_SECONDS)
+  useEffect(() => {
+    if (!revealed) return
+    setSecondsLeft(REVEAL_SECONDS)
+    const t = setInterval(() => {
+      setSecondsLeft(s => {
+        if (s <= 1) { setRevealed(null); setPassword(''); return REVEAL_SECONDS }
+        return s - 1
+      })
+    }, 1000)
+    return () => clearInterval(t)
+  }, [revealed])
+
+  const reset = () => {
+    setPassword(''); setRevealed(null); setError(''); setOkMsg('')
+    setNewPw(''); setConfirmPw(''); setCopied(false); setShowDeleteModal(false)
+    setValueVisible(false)
+  }
+  const go = (i: Item) => { reset(); setItem(i) }
+
+  const reveal = async () => {
+    setBusy(true); setError('')
+    const r = await sendToBackground({ type: 'REVEAL', password })
+    setBusy(false)
+    if (r.ok && r.secrets) setRevealed(r.secrets)
+    else setError(r.ok ? 'Failed' : r.error)
+  }
+
+  const changePassword = async () => {
+    setError(''); setOkMsg('')
+    if (newPw.length < 8) { setError('New password must be at least 8 characters'); return }
+    if (newPw !== confirmPw) { setError('New passwords do not match'); return }
+    setBusy(true)
+    const r = await sendToBackground({ type: 'CHANGE_PASSWORD', oldPassword: password, newPassword: newPw })
+    setBusy(false)
+    if (r.ok) { setOkMsg('Password changed'); setPassword(''); setNewPw(''); setConfirmPw('') }
+    else setError(r.error)
+  }
+
+  const doDelete = async () => {
+    await sendToBackground({ type: 'WIPE' })
+    onWiped()
+  }
+
+  const copyValue = async (v: string) => {
+    await navigator.clipboard.writeText(v)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  // ---- secret reveal screens (seed / view key / spend key) ----
+  if (item === 'seed' || item === 'viewKey' || item === 'spendKey') {
+    const cfg = SECRET_LABELS[item]
+    const value = revealed ? String(revealed[cfg.field]) : null
+    return (
+      <div className="card">
+        <h2>{cfg.title}</h2>
+        {!value ? (
+          <>
+            <p className="muted">Enter your password to reveal.</p>
+            <input type="password" autoFocus placeholder="Password" value={password}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && password && reveal()} />
+            <div className="row">
+              <button className="btn-ghost" onClick={() => go('menu')}>Back</button>
+              <button className="btn-primary" disabled={busy || !password} onClick={reveal}>
+                {busy ? '…' : 'Reveal'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span className="muted">Auto-hides in {secondsLeft}s</span>
+              <button className="btn-icon" title={valueVisible ? 'Hide' : 'Show'}
+                onClick={() => setValueVisible(v => !v)}>
+                <EyeIcon off={valueVisible} />
+              </button>
+            </div>
+            {/* masked by default; keys show first/last 15 chars, the seed in full (it must be written down) */}
+            <div className="seed">
+              {!valueVisible
+                ? (item === 'seed'
+                    // mask each seed word individually so the block wraps like real words
+                    ? value.split(/\s+/).map(w => '•'.repeat(Math.min(w.length, 8))).join(' ')
+                    : '•'.repeat(15) + '...' + '•'.repeat(15))
+                : item === 'seed' ? value : truncateMiddle(value)}
+            </div>
+            <p className="warn">⚠ {cfg.note}</p>
+            <div className="row">
+              <button className="btn-ghost" onClick={() => go('menu')}>Back</button>
+              {/* copies the real value even while the display is masked */}
+              <button className="btn-primary" onClick={() => copyValue(value)}>
+                {copied ? '✓ Copied' : 'Copy'}
+              </button>
+            </div>
+          </>
+        )}
+        {error && <p className="error">{error}</p>}
+      </div>
+    )
+  }
+
+  // ---- change password ----
+  if (item === 'password') {
+    return (
+      <div className="card">
+        <h2>Change Password</h2>
+        <input type="password" autoFocus placeholder="Current password" value={password}
+          onChange={e => setPassword(e.target.value)} />
+        <input type="password" placeholder="New password (min 8 chars)" value={newPw}
+          onChange={e => setNewPw(e.target.value)} />
+        <input type="password" placeholder="Confirm new password" value={confirmPw}
+          onChange={e => setConfirmPw(e.target.value)} />
+        <div className="row">
+          <button className="btn-ghost" onClick={() => go('menu')}>Back</button>
+          <button className="btn-primary" disabled={busy || !password || !newPw || !confirmPw} onClick={changePassword}>
+            {busy ? '…' : 'Change'}
+          </button>
+        </div>
+        {okMsg && <p className="ok">✓ {okMsg}</p>}
+        {error && <p className="error">{error}</p>}
+      </div>
+    )
+  }
+
+  // ---- auto-lock duration ----
+  if (item === 'autolock') {
+    const pick = async (m: number) => {
+      setError('')
+      const r = await sendToBackground({ type: 'SET_AUTOLOCK', minutes: m })
+      if (r.ok) { setAutoLock(m); setOkMsg(`Auto-lock set to ${m} minutes`) }
+      else setError(r.error)
+    }
+    return (
+      <div className="card">
+        <h2>Auto-Lock</h2>
+        <p className="muted">Lock the wallet after this long without activity.</p>
+        <div className="row" style={{ marginBottom: 10 }}>
+          {AUTOLOCK_OPTIONS.map(m => (
+            <button key={m} className={autoLock === m ? 'btn-primary' : 'btn-ghost'} onClick={() => pick(m)}>
+              {m >= 60 ? `${m / 60}h` : `${m}m`}
+            </button>
+          ))}
+        </div>
+        <button className="btn-ghost" style={{ width: '100%' }} onClick={() => go('menu')}>Back</button>
+        {okMsg && <p className="ok">✓ {okMsg}</p>}
+        {error && <p className="error">{error}</p>}
+      </div>
+    )
+  }
+
+  // ---- delete wallet ----
+  if (item === 'delete') {
+    return (
+      <div className="card">
+        <h2>Delete Wallet</h2>
+        <p className="muted">
+          This removes the wallet and its encrypted vault from this browser.
+          Your funds remain on the Beldex blockchain.
+        </p>
+        <div className="row">
+          <button className="btn-ghost" onClick={() => go('menu')}>Back</button>
+          <button className="btn-danger" onClick={() => setShowDeleteModal(true)}>Delete wallet</button>
+        </div>
+
+        {showDeleteModal && (
+          <div className="modal-overlay" onClick={() => setShowDeleteModal(false)}>
+            <div className="modal" onClick={e => e.stopPropagation()}>
+              <h2>Are you sure?</h2>
+              <p className="warn">
+                ⚠ Once deleted, this wallet can be restored only using your seed.
+                If you haven't written down your 25-word recovery seed, do it before deleting.
+              </p>
+              <div className="row">
+                <button className="btn-ghost" onClick={() => setShowDeleteModal(false)}>Cancel</button>
+                <button className="btn-danger" onClick={doDelete}>Delete</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ---- menu ----
+  return (
+    <div className="card" style={{ padding: '8px 0' }}>
+      <h2 style={{ padding: '8px 16px 4px' }}>Settings</h2>
+      <div className="menu-item" onClick={() => go('seed')}>
+        <span>Show Recovery Seed</span><span className="chev">›</span>
+      </div>
+      <div className="menu-item" onClick={() => go('viewKey')}>
+        <span>Show Private View Key</span><span className="chev">›</span>
+      </div>
+      <div className="menu-item" onClick={() => go('spendKey')}>
+        <span>Show Private Spend Key</span><span className="chev">›</span>
+      </div>
+      <div className="menu-item" onClick={() => go('password')}>
+        <span>Change Password</span><span className="chev">›</span>
+      </div>
+      <div className="menu-item" onClick={toggleNotif}>
+        <span>Notifications</span>
+        <span className={`switch ${notifOn ? 'on' : ''}`}><span className="knob" /></span>
+      </div>
+      <div className="menu-item" onClick={() => go('autolock')}>
+        <span>Auto-Lock {autoLock ? `(${autoLock >= 60 ? `${autoLock / 60}h` : `${autoLock}m`})` : ''}</span>
+        <span className="chev">›</span>
+      </div>
+      <div className="menu-item danger" onClick={() => go('delete')}>
+        <span>Delete Wallet</span><span className="chev">›</span>
+      </div>
+      <div style={{ padding: '10px 16px 4px' }}>
+        <button className="btn-ghost" style={{ width: '100%' }} onClick={onBack}>Back</button>
+      </div>
+    </div>
+  )
+}
