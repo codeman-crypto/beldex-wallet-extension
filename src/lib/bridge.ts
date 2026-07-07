@@ -75,11 +75,14 @@ export async function generateKeyImage(
  * (integrated address). The LWS tracks these against the primary address, unlike
  * true subaddresses which this light-wallet stack cannot scan for.
  */
-export async function newIntegratedAddress(primaryAddress: string): Promise<{ address: string; paymentId: string }> {
+export async function newIntegratedAddress(
+  primaryAddress: string,
+  paymentId?: string // 16 hex chars; omit for a random one
+): Promise<{ address: string; paymentId: string }> {
   const bridge = await getBridge()
-  const paymentId: string = bridge.new_payment_id()
-  const address: string = bridge.new__int_addr_from_addr_and_short_pid(primaryAddress, paymentId, CONFIG.NETTYPE)
-  return { address, paymentId }
+  const pid: string = paymentId ?? bridge.new_payment_id()
+  const address: string = bridge.new__int_addr_from_addr_and_short_pid(primaryAddress, pid, CONFIG.NETTYPE)
+  return { address, paymentId: pid }
 }
 
 export async function estimatedTxFee(feePerB: string, priority: number, forkVersion: number): Promise<string> {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { sendToBackground, WalletSecrets } from '../../lib/messages'
+import { sendToBackground, WalletMeta, WalletSecrets } from '../../lib/messages'
+import { Onboarding } from './Onboarding'
 import { correctedTotalSent } from '../../lib/spent'
 import * as lws from '../../lib/lws'
 import { sendFunds, SEND_STEPS } from '../../lib/send'
@@ -7,6 +8,7 @@ import { Settings } from './Settings'
 import { Receive } from './Receive'
 import { truncateMiddle } from '../../lib/format'
 import { getBdxPriceUsdt } from '../../lib/price'
+import { getPidLabels } from '../../lib/pidLabels'
 
 const ATOMIC = 1e9 // 1 BDX = 1e9 atomic units
 const POLL_MS = 10_000 // Beldex block time ~30s; poll LWS every 10s while popup is open
@@ -29,26 +31,28 @@ type TxFilter = 'all' | 'in' | 'out'
 // ---- locally-tracked outgoing txs (bridge the gap until the LWS indexes them) ----
 
 interface PendingLocalTx { hash: string; sentAtomic: string; timestamp: string }
-const PENDING_KEY = 'pending_txs'
 const PENDING_TTL_MS = 24 * 3600 * 1000 // give up tracking after a day
 
-async function getPendingLocal(): Promise<PendingLocalTx[]> {
-  return (await chrome.storage.local.get(PENDING_KEY))[PENDING_KEY] ?? []
+// keyed per wallet address so multiple wallets don't see each other's pendings
+const pendingKey = (address: string) => `pending_txs_${address}`
+
+async function getPendingLocal(address: string): Promise<PendingLocalTx[]> {
+  return (await chrome.storage.local.get(pendingKey(address)))[pendingKey(address)] ?? []
 }
 
-async function addPendingLocal(tx: PendingLocalTx): Promise<void> {
-  const list = await getPendingLocal()
+async function addPendingLocal(address: string, tx: PendingLocalTx): Promise<void> {
+  const list = await getPendingLocal(address)
   if (!list.some(p => p.hash === tx.hash)) {
-    await chrome.storage.local.set({ [PENDING_KEY]: [tx, ...list] })
+    await chrome.storage.local.set({ [pendingKey(address)]: [tx, ...list] })
   }
 }
 
 /** Drop entries the server now knows about (or stale ones); return those still unknown. */
-async function reconcilePendingLocal(serverHashes: Set<string>): Promise<PendingLocalTx[]> {
-  const list = await getPendingLocal()
+async function reconcilePendingLocal(address: string, serverHashes: Set<string>): Promise<PendingLocalTx[]> {
+  const list = await getPendingLocal(address)
   const still = list.filter(p =>
     !serverHashes.has(p.hash) && Date.now() - new Date(p.timestamp).getTime() < PENDING_TTL_MS)
-  if (still.length !== list.length) await chrome.storage.local.set({ [PENDING_KEY]: still })
+  if (still.length !== list.length) await chrome.storage.local.set({ [pendingKey(address)]: still })
   return still
 }
 
@@ -65,7 +69,8 @@ function timeAgo(ts?: string): string {
   return `${Math.floor(s / 86400)}d ago`
 }
 
-export function Dashboard({ address, onLocked }: { address: string; onLocked: () => void }) {
+export function Dashboard({ address, walletName, wallets, onLocked }:
+  { address: string; walletName: string; wallets: WalletMeta[]; onLocked: () => void }) {
   const [info, setInfo] = useState<any>(null)
   const [txs, setTxs] = useState<Tx[]>([])
   const [creds, setCreds] = useState<lws.Credentials | null>(null)
@@ -76,8 +81,11 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
   const [txFilter, setTxFilter] = useState<TxFilter>('all')
   const [selectedTx, setSelectedTx] = useState<Tx | null>(null)
   const [txHashCopied, setTxHashCopied] = useState(false)
+  const [pidLabels, setPidLabels] = useState<Record<string, string>>({})
+  useEffect(() => { if (selectedTx) getPidLabels().then(setPidLabels) }, [selectedTx])
   const [error, setError] = useState('')
-  const [view, setView] = useState<'home' | 'send' | 'receive' | 'settings'>('home')
+  const [view, setView] = useState<'home' | 'send' | 'receive' | 'settings' | 'addwallet'>('home')
+  const [showWallets, setShowWallets] = useState(false)
 
   // send form
   const [to, setTo] = useState('')
@@ -117,7 +125,7 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
         .filter((tx: Tx) => Number(tx.total_received ?? 0) > 0 || Number(tx.total_sent ?? 0) > 0)
 
       // Just-sent txs the LWS hasn't indexed yet: show them as pending right away.
-      const localPending = await reconcilePendingLocal(new Set(serverList.map(tx => tx.hash)))
+      const localPending = await reconcilePendingLocal(address, new Set(serverList.map(tx => tx.hash)))
       const list = [
         ...localPending.map(p => ({
           hash: p.hash,
@@ -184,7 +192,7 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
       })
       // track locally so it shows as pending in history immediately,
       // even before the LWS scanner picks it up
-      await addPendingLocal({
+      await addPendingLocal(address, {
         hash: r.tx_hash,
         sentAtomic: r.total_sent ?? String(Math.round(parseFloat(amount) * ATOMIC)),
         timestamp: new Date().toISOString()
@@ -223,6 +231,9 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
       <div className="header">
         <div className="brand"><img src="icons/logo.svg" alt="" />Beldex</div>
         <div style={{ display: 'flex', gap: 6 }}>
+          <button className="btn-icon" title="Switch wallet" onClick={() => setShowWallets(true)}>
+            {walletName || 'Wallet'} ▾
+          </button>
           <button className="btn-icon" title="Settings" onClick={() => setView(view === 'settings' ? 'home' : 'settings')}>
             ⚙
           </button>
@@ -232,10 +243,13 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
         </div>
       </div>
 
-      {view === 'settings' && <Settings onBack={() => setView('home')} onWiped={onLocked} />}
+      {view === 'settings' && <Settings walletName={walletName} onBack={() => setView('home')} onWiped={onLocked} onChanged={onLocked} />}
       {view === 'receive' && <Receive address={address} onBack={() => setView('home')} />}
+      {view === 'addwallet' && (
+        <Onboarding addMode onDone={onLocked} onCancel={() => setView('home')} />
+      )}
 
-      {view !== 'settings' && view !== 'receive' && <>
+      {view !== 'settings' && view !== 'receive' && view !== 'addwallet' && <>
       <div className="card balance-card">
         <div className="sync">
           {info
@@ -394,6 +408,38 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
         </div>
       )}
 
+      {showWallets && (
+        <div className="modal-overlay" onClick={() => setShowWallets(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Wallets</h2>
+            {wallets.map(w => (
+              <div className="menu-item" key={w.id} onClick={async () => {
+                setShowWallets(false)
+                if (!w.active) {
+                  // switching locks the session — the target wallet's password is required
+                  await sendToBackground({ type: 'SWITCH_WALLET', id: w.id })
+                  onLocked()
+                }
+              }}>
+                <span>
+                  {w.active ? <b className="ok">● </b> : ''}{w.name}
+                  {w.address && <span className="muted" style={{ marginLeft: 8, fontSize: 10 }}>
+                    {truncateMiddle(w.address, 6)}
+                  </span>}
+                </span>
+                {!w.active && <span className="chev">›</span>}
+              </div>
+            ))}
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn-ghost" onClick={() => setShowWallets(false)}>Close</button>
+              <button className="btn-primary" onClick={() => { setShowWallets(false); setView('addwallet') }}>
+                + Add wallet
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedTx && (() => {
         const delta = Number(selectedTx.total_received ?? 0) - Number(selectedTx.total_sent ?? 0)
         const incoming = delta >= 0
@@ -413,6 +459,8 @@ export function Dashboard({ address, onLocked }: { address: string; onLocked: ()
         ]
         if (selectedTx.payment_id && !/^0+$/.test(selectedTx.payment_id)) {
           rows.push(['Payment ID', truncateMiddle(selectedTx.payment_id)])
+          const pidLabel = pidLabels[selectedTx.payment_id.toLowerCase()]
+          if (pidLabel) rows.push(['Label', <b className="ok">{pidLabel}</b>])
         }
         return (
           <div className="modal-overlay" onClick={() => setSelectedTx(null)}>

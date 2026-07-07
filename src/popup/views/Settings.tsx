@@ -4,7 +4,7 @@ import { truncateMiddle } from '../../lib/format'
 
 const REVEAL_SECONDS = 30 // revealed secrets auto-hide after this long
 
-type Item = 'menu' | 'seed' | 'viewKey' | 'spendKey' | 'password' | 'autolock' | 'delete'
+type Item = 'menu' | 'seed' | 'viewKey' | 'spendKey' | 'password' | 'autolock' | 'rename' | 'delete'
 
 const AUTOLOCK_OPTIONS = [5, 15, 30, 60] // minutes
 
@@ -39,7 +39,8 @@ const SECRET_LABELS: Record<string, { title: string; field: keyof WalletSecrets;
   }
 }
 
-export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () => void }) {
+export function Settings({ walletName, onBack, onWiped, onChanged }:
+  { walletName: string; onBack: () => void; onWiped: () => void; onChanged: () => void }) {
   const [item, setItem] = useState<Item>('menu')
   const [password, setPassword] = useState('')
   const [revealed, setRevealed] = useState<WalletSecrets | null>(null)
@@ -51,6 +52,9 @@ export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () 
   // change password form
   const [newPw, setNewPw] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
+
+  // rename wallet form
+  const [newName, setNewName] = useState(walletName)
 
   // delete confirmation modal
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -193,6 +197,27 @@ export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () 
     )
   }
 
+  // ---- rename wallet ----
+  if (item === 'rename') {
+    return (
+      <div className="card">
+        <h2>Rename Wallet</h2>
+        <input autoFocus placeholder="Wallet name" value={newName}
+          onChange={e => setNewName(e.target.value)} />
+        <div className="row">
+          <button className="btn-ghost" onClick={() => go('menu')}>Back</button>
+          <button className="btn-primary" disabled={!newName.trim()} onClick={async () => {
+            const r = await sendToBackground({ type: 'RENAME_WALLET', name: newName })
+            if (r.ok) { setOkMsg('Renamed'); onChanged() }
+            else setError(r.error)
+          }}>Save</button>
+        </div>
+        {okMsg && <p className="ok">✓ {okMsg}</p>}
+        {error && <p className="error">{error}</p>}
+      </div>
+    )
+  }
+
   // ---- auto-lock duration ----
   if (item === 'autolock') {
     const pick = async (m: number) => {
@@ -225,8 +250,9 @@ export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () 
       <div className="card">
         <h2>Delete Wallet</h2>
         <p className="muted">
-          This removes the wallet and its encrypted vault from this browser.
-          Your funds remain on the Beldex blockchain.
+          This removes <b>{walletName || 'this wallet'}</b> and its encrypted vault from
+          this browser. Other wallets are not affected. Your funds remain on the
+          Beldex blockchain.
         </p>
         <div className="row">
           <button className="btn-ghost" onClick={() => go('menu')}>Back</button>
@@ -264,6 +290,9 @@ export function Settings({ onBack, onWiped }: { onBack: () => void; onWiped: () 
       </div>
       <div className="menu-item" onClick={() => go('spendKey')}>
         <span>Show Private Spend Key</span><span className="chev">›</span>
+      </div>
+      <div className="menu-item" onClick={() => { setNewName(walletName); go('rename') }}>
+        <span>Rename Wallet {walletName ? `(${walletName})` : ''}</span><span className="chev">›</span>
       </div>
       <div className="menu-item" onClick={() => go('password')}>
         <span>Change Password</span><span className="chev">›</span>

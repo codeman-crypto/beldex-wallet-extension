@@ -2,12 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { truncateMiddle } from '../../lib/format'
 import { newIntegratedAddress } from '../../lib/bridge'
+import { deriveShortPid, savePidLabel } from '../../lib/pidLabels'
 
 export function Receive({ address, onBack }: { address: string; onBack: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [shown, setShown] = useState(address) // primary or a generated unique address
   const [paymentId, setPaymentId] = useState('')
+  const [label, setLabel] = useState('')
+  const [activeLabel, setActiveLabel] = useState('')
   const [copied, setCopied] = useState(false)
+  const [pidCopied, setPidCopied] = useState(false)
   const [error, setError] = useState('')
 
   const isUnique = shown !== address
@@ -42,10 +46,17 @@ export function Receive({ address, onBack }: { address: string; onBack: () => vo
   const generateUnique = async () => {
     setError('')
     try {
-      const r = await newIntegratedAddress(address)
+      const trimmed = label.trim()
+      // custom string -> deterministic payment ID (SHA-256, first 8 bytes);
+      // empty label -> random ID as before
+      const pid = trimmed ? await deriveShortPid(trimmed) : undefined
+      const r = await newIntegratedAddress(address, pid)
+      if (trimmed) await savePidLabel(r.paymentId, trimmed)
       setShown(r.address)
       setPaymentId(r.paymentId)
+      setActiveLabel(trimmed)
       setCopied(false)
+      setPidCopied(false)
     } catch (e: any) {
       setError(e.message)
     }
@@ -64,17 +75,42 @@ export function Receive({ address, onBack }: { address: string; onBack: () => vo
         <canvas ref={canvasRef} />
       </div>
       <p className="muted" style={{ margin: '8px 0 4px' }}>
-        {isUnique ? <>Unique address · payment ID <b className="ok">{paymentId}</b></> : 'Your primary address'}
+        {isUnique ? 'Unique address' : 'Your primary address'}
       </p>
       <div className="addr" style={{ marginTop: 0, marginBottom: 8 }}>
         <span title={shown}>{truncateMiddle(shown)}</span>
         <button className="btn-icon" onClick={copy}>{copied ? '✓' : '⧉'}</button>
       </div>
+      {!isUnique && (
+        <input placeholder="Label (optional, e.g. invoice-42)" value={label}
+          onChange={e => setLabel(e.target.value)} style={{ marginBottom: 8 }} />
+      )}
+      {isUnique && activeLabel && (
+        <>
+          <p className="muted" style={{ margin: '0 0 4px' }}>Label</p>
+          <div className="addr" style={{ marginTop: 0, marginBottom: 8 }}>
+            <span title={activeLabel}>{activeLabel}</span>
+          </div>
+        </>
+      )}
+      {isUnique && (
+        <>
+          <p className="muted" style={{ margin: '0 0 4px' }}>Payment ID</p>
+          <div className="addr" style={{ marginTop: 0, marginBottom: 8 }}>
+            <span title={paymentId}>{paymentId}</span>
+            <button className="btn-icon" onClick={async () => {
+              await navigator.clipboard.writeText(paymentId)
+              setPidCopied(true)
+              setTimeout(() => setPidCopied(false), 1500)
+            }}>{pidCopied ? '✓' : '⧉'}</button>
+          </div>
+        </>
+      )}
       <div className="row" style={{ marginBottom: 8 }}>
         {isUnique
-          ? <button className="btn-ghost" onClick={() => { setShown(address); setPaymentId(''); setCopied(false) }}>Primary</button>
+          ? <button className="btn-ghost" onClick={() => { setShown(address); setPaymentId(''); setActiveLabel(''); setCopied(false) }}>Primary</button>
           : <button className="btn-ghost" onClick={generateUnique}>+ Unique address</button>}
-        {isUnique && <button className="btn-ghost" onClick={generateUnique}>↻ New</button>}
+        {isUnique && !activeLabel && <button className="btn-ghost" onClick={generateUnique}>↻ New</button>}
       </div>
       {isUnique && (
         <p className="muted" style={{ fontSize: 10, margin: '0 0 8px' }}>

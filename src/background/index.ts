@@ -1,43 +1,85 @@
-// Background service worker: owns the encrypted vault, the unlocked session,
-// and background chain-sync.
+// Background service worker: owns the encrypted wallet vaults, the unlocked
+// session, and background chain-sync.
 //
-// Session storage: chrome.storage.session (memory-backed, never written to
-// disk, cleared on browser exit). A plain variable won't do — MV3 kills idle
-// workers after ~30s, which would silently re-lock the wallet.
-//
-// Background sync: while unlocked, a chrome.alarms job polls the LWS every
-// 30s (Chrome's minimum), caches the result for instant popup display, and
-// fires a notification when new funds arrive.
+// Multi-wallet model: each wallet = { name, address, vault } under its own id;
+// vaults are encrypted independently (each with its own password). Exactly one
+// wallet is "active"; the session (chrome.storage.session — memory-backed,
+// never on disk, survives SW restarts, cleared on browser exit) holds the
+// active wallet's decrypted secrets while unlocked.
 //
 // No WASM here — the Emscripten glue targets window contexts; all crypto-core
-// work happens in the popup.
+// work happens in the panel.
 
 import { encryptVault, decryptVault, Vault } from '../lib/keyring'
 import { CONFIG } from '../lib/config'
 import * as lws from '../lib/lws'
-import type { BgRequest, BgResponse, WalletSecrets, WalletState } from '../lib/messages'
+import type { BgRequest, BgResponse, WalletMeta, WalletSecrets, WalletState } from '../lib/messages'
 
 // Open the side panel when the toolbar icon is clicked (Chrome 114+).
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch(() => { /* older Chrome — icon does nothing; panel still openable via context menu */ })
 
-const VAULT_KEY = 'beldex_vault'
+const LEGACY_VAULT_KEY = 'beldex_vault'
+const WALLETS_KEY = 'wallets'
+const ACTIVE_KEY = 'active_wallet_id'
 const SESSION_KEY = 'session_secrets'
 const CACHE_KEY = 'sync_cache'
 const ALARM_LOCK = 'auto_lock'
 const ALARM_SYNC = 'bg_sync'
 const ATOMIC = 1e9
 
+interface StoredWallet { name: string; address: string; vault: Vault }
+type WalletMap = Record<string, StoredWallet>
+
+// ---- wallet store (with one-time migration from the single-vault format) ----
+
+async function getWallets(): Promise<WalletMap> {
+  const o = await chrome.storage.local.get([WALLETS_KEY, LEGACY_VAULT_KEY, ACTIVE_KEY])
+  let wallets: WalletMap = o[WALLETS_KEY] ?? {}
+  if (Object.keys(wallets).length === 0 && o[LEGACY_VAULT_KEY]) {
+    // migrate the pre-multi-wallet vault; address backfilled on first unlock
+    wallets = { w1: { name: 'Wallet 1', address: '', vault: o[LEGACY_VAULT_KEY] } }
+    await chrome.storage.local.set({ [WALLETS_KEY]: wallets, [ACTIVE_KEY]: 'w1' })
+    await chrome.storage.local.remove(LEGACY_VAULT_KEY)
+  }
+  return wallets
+}
+
+async function setWallets(w: WalletMap): Promise<void> {
+  await chrome.storage.local.set({ [WALLETS_KEY]: w })
+}
+
+async function getActiveId(): Promise<string | null> {
+  const wallets = await getWallets()
+  const ids = Object.keys(wallets)
+  if (ids.length === 0) return null
+  const o = await chrome.storage.local.get(ACTIVE_KEY)
+  const id = o[ACTIVE_KEY]
+  if (id && wallets[id]) return id
+  await chrome.storage.local.set({ [ACTIVE_KEY]: ids[0] })
+  return ids[0]
+}
+
+async function walletList(): Promise<WalletMeta[]> {
+  const wallets = await getWallets()
+  const active = await getActiveId()
+  return Object.entries(wallets).map(([id, w]) => ({
+    id, name: w.name, address: w.address, active: id === active
+  }))
+}
+
 // ---- session ----------------------------------------------------------------
 
-async function getSession(): Promise<WalletSecrets | null> {
+interface Session { walletId: string; secrets: WalletSecrets }
+
+async function getSession(): Promise<Session | null> {
   const o = await chrome.storage.session.get(SESSION_KEY)
   return o[SESSION_KEY] ?? null
 }
 
-async function startSession(secrets: WalletSecrets): Promise<void> {
-  await chrome.storage.session.set({ [SESSION_KEY]: secrets })
+async function startSession(walletId: string, secrets: WalletSecrets): Promise<void> {
+  await chrome.storage.session.set({ [SESSION_KEY]: { walletId, secrets } })
   await touchAutoLock()
   chrome.alarms.create(ALARM_SYNC, { periodInMinutes: 0.5, delayInMinutes: 0 })
 }
@@ -47,6 +89,8 @@ async function endSession(): Promise<void> {
   await chrome.alarms.clear(ALARM_SYNC)
   await chrome.alarms.clear(ALARM_LOCK)
 }
+
+// ---- auto-lock ----------------------------------------------------------------
 
 const AUTOLOCK_KEY = 'auto_lock_minutes'
 
@@ -63,15 +107,18 @@ async function touchAutoLock() {
 // ---- background sync ----------------------------------------------------------
 
 async function syncOnce(): Promise<void> {
-  const s = await getSession()
-  if (!s) { chrome.alarms.clear(ALARM_SYNC); return }
+  const session = await getSession()
+  if (!session) { chrome.alarms.clear(ALARM_SYNC); return }
+  const s = session.secrets
   try {
     const info = await lws.getAddressInfo({ address: s.address, view_key: s.secViewKey })
     const prevCache = (await chrome.storage.session.get(CACHE_KEY))[CACHE_KEY]
-    await chrome.storage.session.set({ [CACHE_KEY]: { info, at: Date.now() } })
+    await chrome.storage.session.set({ [CACHE_KEY]: { info, at: Date.now(), address: s.address } })
 
     // Notify on new incoming funds. Heuristic: total_received also grows from
     // change returned by our own outgoing txs, so skip when total_sent grew too.
+    // Compare only caches for the same wallet (switching wallets resets this).
+    if (prevCache?.address !== s.address) return
     const prevReceived = Number(prevCache?.info?.total_received ?? NaN)
     const prevSent = Number(prevCache?.info?.total_sent ?? NaN)
     const nowReceived = Number(info.total_received ?? 0)
@@ -94,40 +141,55 @@ chrome.alarms.onAlarm.addListener(async a => {
   if (a.name === ALARM_SYNC) await syncOnce()
 })
 
-// ---- vault / message handling ----------------------------------------------
+// ---- message handling ----------------------------------------------------------
 
-async function getVault(): Promise<Vault | null> {
-  const o = await chrome.storage.local.get(VAULT_KEY)
-  return o[VAULT_KEY] ?? null
-}
-
-async function state(): Promise<{ state: WalletState; address?: string }> {
+async function stateResponse(): Promise<BgResponse> {
+  const wallets = await walletList()
   const session = await getSession()
-  if (session) return { state: 'unlocked', address: session.address }
-  return { state: (await getVault()) ? 'locked' : 'uninitialized' }
+  const activeId = await getActiveId()
+  const active = wallets.find(w => w.active)
+  let state: WalletState = 'uninitialized'
+  if (session && session.walletId === activeId) state = 'unlocked'
+  else if (wallets.length > 0) state = 'locked'
+  return {
+    ok: true,
+    state,
+    address: state === 'unlocked' ? session!.secrets.address : undefined,
+    walletName: active?.name,
+    wallets
+  }
 }
 
 async function handle(req: BgRequest): Promise<BgResponse> {
   switch (req.type) {
-    case 'GET_STATE': {
-      const s = await state()
-      return { ok: true, ...s }
-    }
+    case 'GET_STATE':
+      return stateResponse()
 
     case 'SAVE_WALLET': {
+      const wallets = await getWallets()
       const vault = await encryptVault(JSON.stringify(req.secrets), req.password)
-      await chrome.storage.local.set({ [VAULT_KEY]: vault })
-      await startSession(req.secrets)
-      return { ok: true, state: 'unlocked', address: req.secrets.address }
+      const id = crypto.randomUUID()
+      const name = req.name?.trim() || `Wallet ${Object.keys(wallets).length + 1}`
+      wallets[id] = { name, address: req.secrets.address, vault }
+      await setWallets(wallets)
+      await chrome.storage.local.set({ [ACTIVE_KEY]: id })
+      await endSession() // drop any previous wallet's session/cache
+      await startSession(id, req.secrets)
+      return stateResponse()
     }
 
     case 'UNLOCK': {
-      const vault = await getVault()
-      if (!vault) return { ok: false, error: 'No wallet stored' }
+      const wallets = await getWallets()
+      const activeId = await getActiveId()
+      if (!activeId) return { ok: false, error: 'No wallet stored' }
       try {
-        const secrets: WalletSecrets = JSON.parse(await decryptVault(vault, req.password))
-        await startSession(secrets)
-        return { ok: true, state: 'unlocked', address: secrets.address }
+        const secrets: WalletSecrets = JSON.parse(await decryptVault(wallets[activeId].vault, req.password))
+        if (!wallets[activeId].address && secrets.address) {
+          wallets[activeId].address = secrets.address // backfill migrated wallet
+          await setWallets(wallets)
+        }
+        await startSession(activeId, secrets)
+        return stateResponse()
       } catch {
         return { ok: false, error: 'Incorrect password' }
       }
@@ -135,13 +197,41 @@ async function handle(req: BgRequest): Promise<BgResponse> {
 
     case 'LOCK':
       await endSession()
-      return { ok: true, state: 'locked' }
+      return stateResponse()
 
     case 'GET_SECRETS': {
       const session = await getSession()
       if (!session) return { ok: false, error: 'Locked' }
       await touchAutoLock()
-      return { ok: true, secrets: session }
+      return { ok: true, secrets: session.secrets }
+    }
+
+    case 'REVEAL': {
+      // Always re-verifies the password against the ACTIVE wallet's vault.
+      const wallets = await getWallets()
+      const activeId = await getActiveId()
+      if (!activeId) return { ok: false, error: 'No wallet stored' }
+      try {
+        const secrets: WalletSecrets = JSON.parse(await decryptVault(wallets[activeId].vault, req.password))
+        return { ok: true, secrets }
+      } catch {
+        return { ok: false, error: 'Incorrect password' }
+      }
+    }
+
+    case 'CHANGE_PASSWORD': {
+      const wallets = await getWallets()
+      const activeId = await getActiveId()
+      if (!activeId) return { ok: false, error: 'No wallet stored' }
+      let plaintext: string
+      try {
+        plaintext = await decryptVault(wallets[activeId].vault, req.oldPassword)
+      } catch {
+        return { ok: false, error: 'Current password is incorrect' }
+      }
+      wallets[activeId].vault = await encryptVault(plaintext, req.newPassword)
+      await setWallets(wallets)
+      return { ok: true }
     }
 
     case 'GET_AUTOLOCK':
@@ -155,43 +245,46 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       return { ok: true, minutes: m }
     }
 
-    case 'REVEAL': {
-      // Always re-verifies the password against the vault, even while unlocked —
-      // viewing seed/keys must prove knowledge of the password.
-      const vault = await getVault()
-      if (!vault) return { ok: false, error: 'No wallet stored' }
-      try {
-        const secrets: WalletSecrets = JSON.parse(await decryptVault(vault, req.password))
-        return { ok: true, secrets }
-      } catch {
-        return { ok: false, error: 'Incorrect password' }
+    case 'SWITCH_WALLET': {
+      const wallets = await getWallets()
+      if (!wallets[req.id]) return { ok: false, error: 'Unknown wallet' }
+      const activeId = await getActiveId()
+      if (req.id !== activeId) {
+        await endSession() // switching requires the target wallet's password
+        await chrome.storage.local.set({ [ACTIVE_KEY]: req.id })
       }
+      return stateResponse()
     }
 
-    case 'CHANGE_PASSWORD': {
-      const vault = await getVault()
-      if (!vault) return { ok: false, error: 'No wallet stored' }
-      let plaintext: string
-      try {
-        plaintext = await decryptVault(vault, req.oldPassword)
-      } catch {
-        return { ok: false, error: 'Current password is incorrect' }
-      }
-      const newVault = await encryptVault(plaintext, req.newPassword)
-      await chrome.storage.local.set({ [VAULT_KEY]: newVault })
-      return { ok: true }
+    case 'RENAME_WALLET': {
+      const wallets = await getWallets()
+      const activeId = await getActiveId()
+      if (!activeId) return { ok: false, error: 'No wallet stored' }
+      const name = req.name.trim()
+      if (!name) return { ok: false, error: 'Name cannot be empty' }
+      wallets[activeId].name = name
+      await setWallets(wallets)
+      return stateResponse()
     }
 
-    case 'WIPE':
+    case 'WIPE': {
+      // deletes the ACTIVE wallet only; other wallets stay intact
+      const wallets = await getWallets()
+      const activeId = await getActiveId()
+      if (activeId) {
+        delete wallets[activeId]
+        await setWallets(wallets)
+        const remaining = Object.keys(wallets)
+        await chrome.storage.local.set({ [ACTIVE_KEY]: remaining[0] ?? '' })
+      }
       await endSession()
-      await chrome.storage.local.remove(VAULT_KEY)
-      return { ok: true, state: 'uninitialized' }
+      return stateResponse()
+    }
   }
 }
 
 chrome.runtime.onMessage.addListener((req: BgRequest, sender, sendResponse) => {
   // Defense in depth: only our own extension pages may talk to the keyring.
-  // (Web pages can't reach onMessage without externally_connectable, but be explicit.)
   if (sender.id !== chrome.runtime.id) return
   handle(req).then(sendResponse).catch((e: Error) => sendResponse({ ok: false, error: e.message }))
   return true // keep the channel open for the async response

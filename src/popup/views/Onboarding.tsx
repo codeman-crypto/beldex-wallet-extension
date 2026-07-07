@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { createWallet, restoreFromMnemonic } from '../../lib/bridge'
 import { sendToBackground, WalletSecrets } from '../../lib/messages'
 
-export function Onboarding({ onDone }: { onDone: () => void }) {
+export function Onboarding({ onDone, addMode = false, onCancel }:
+  { onDone: () => void; addMode?: boolean; onCancel?: () => void }) {
   const [mode, setMode] = useState<'menu' | 'create' | 'restore'>('menu')
   const [mnemonic, setMnemonic] = useState('')
+  const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [pending, setPending] = useState<WalletSecrets | null>(null)
   const [error, setError] = useState('')
@@ -12,21 +14,27 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   const save = async (secrets: WalletSecrets) => {
     if (password.length < 8) { setError('Password must be at least 8 characters'); return }
-    const r = await sendToBackground({ type: 'SAVE_WALLET', secrets, password })
+    const r = await sendToBackground({ type: 'SAVE_WALLET', secrets, password, name: name.trim() || undefined })
     if (r.ok) onDone()
     else setError(r.error)
   }
 
   if (mode === 'menu') {
     return (
-      <div className="wrap" style={{ paddingTop: 70 }}>
+      <div className="wrap" style={{ paddingTop: addMode ? 30 : 70 }}>
         <div className="center" style={{ marginBottom: 28 }}>
           <div className="brand lg" style={{ justifyContent: 'center' }}>
             <img src="icons/logo.svg" alt="" />
             Beldex
           </div>
-          <h2 style={{ marginTop: 18, marginBottom: 6 }}>Privacy, in every transaction</h2>
-          <p className="tagline">Keep your payments and identity private</p>
+          {addMode ? (
+            <h2 style={{ marginTop: 18, marginBottom: 6 }}>Add a wallet</h2>
+          ) : (
+            <>
+              <h2 style={{ marginTop: 18, marginBottom: 6 }}>Privacy, in every transaction</h2>
+              <p className="tagline">Keep your payments and identity private</p>
+            </>
+          )}
         </div>
         <button className="btn-primary" disabled={busy} onClick={async () => {
           setBusy(true)
@@ -40,6 +48,12 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <button className="btn-ghost" style={{ width: '100%' }} onClick={() => setMode('restore')}>
           Restore from seed
         </button>
+        {addMode && onCancel && (
+          <>
+            <div style={{ height: 10 }} />
+            <button className="btn-ghost" style={{ width: '100%' }} onClick={onCancel}>Cancel</button>
+          </>
+        )}
         {error && <p className="error">{error}</p>}
       </div>
     )
@@ -53,6 +67,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <p className="warn">
           ⚠ Write these 25 words down and store them safely. They are the only way to recover your funds.
         </p>
+        <input placeholder="Wallet name (e.g. Savings)" value={name}
+          onChange={e => setName(e.target.value)} />
         <input type="password" placeholder="Choose a password (min 8 chars)" value={password}
           onChange={e => setPassword(e.target.value)} />
         <button className="btn-primary" onClick={() => save(pending)}>
@@ -68,6 +84,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       <h2>Restore wallet</h2>
       <textarea rows={4} placeholder="Enter your 25-word seed"
         value={mnemonic} onChange={e => setMnemonic(e.target.value)} />
+      <input placeholder="Wallet name (e.g. Savings)" value={name}
+        onChange={e => setName(e.target.value)} />
       <input type="password" placeholder="Choose a password (min 8 chars)" value={password}
         onChange={e => setPassword(e.target.value)} />
       <div className="row">
