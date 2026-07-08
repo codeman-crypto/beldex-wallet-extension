@@ -7,8 +7,11 @@ export const CONFIG = {
   //   /get_random_outs /submit_raw_tx
   LWS_URL: "https://lwsapi.beldex.io",
 
-  // Public daemon JSON-RPC, used only for BNS name resolution (bns_resolve).
+  // Public daemon JSON-RPC (reserved for future daemon queries).
   DAEMON_RPC_URL: "https://explorer.beldex.io/json_rpc",
+
+  // Explorer REST endpoint for BNS name resolution.
+  BNS_LOOKUP_URL: "https://explorer.beldex.io/api/bnslookup",
 
   // 0 = MAINNET in the serial-bridge nettype convention (see @bdxi/beldex-nettype).
   NETTYPE: 0,

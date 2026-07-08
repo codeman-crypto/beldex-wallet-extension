@@ -51,6 +51,7 @@
         display: flex; flex-direction: column;
         height: 100vh; overflow-y: auto;
       }
+      body.tab-mode .wrap { max-width: 560px; }
       /* history gets exactly the vertical space left on screen; its own content scrolls */
       .history-card {
         flex: 1 1 0px; min-height: 100px;
@@ -113,6 +114,17 @@
         padding: 2px 4px; margin-left: 6px; vertical-align: middle; line-height: 0;
       }
       .eye-btn:hover { color: var(--green); }
+      /* shimmer skeletons while data loads */
+      .skel {
+        display: inline-block; border-radius: 3px;
+        background: linear-gradient(90deg, #161616 25%, #242424 50%, #161616 75%);
+        background-size: 200% 100%;
+        animation: shimmer 1.3s ease-in-out infinite;
+      }
+      @keyframes shimmer { to { background-position: -200% 0; } }
+      .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; }
+      .skel-circle { width: 26px; height: 26px; border-radius: 50%; flex: none; }
+
       .fiat { font-size: 10.5px; color: var(--text-dim); margin: -2px 0 8px; }
       .fiat b { color: var(--text); }
       .sub-balances {

@@ -72,19 +72,4 @@ export function submitRawTx(c: Credentials, txHex: string) {
   return post<any>('/submit_raw_tx', { ...c, tx: txHex })
 }
 
-/** Resolve a BNS name to a wallet address via public daemon JSON-RPC (no LWS needed). */
-export async function resolveBnsName(name: string): Promise<string | null> {
-  const res = await fetch(CONFIG.DAEMON_RPC_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: '0',
-      method: 'bns_resolve',
-      // type 2 = wallet record; verify against beldex_name_system.h mapping_type
-      params: { name_hash: null, name, type: 2 }
-    })
-  })
-  const json = await res.json()
-  return json?.result?.encrypted_value ?? null // decryption of the record value TODO
-}
+// BNS name resolution lives in lib/bns.ts (daemon `bns_lookup` RPC).

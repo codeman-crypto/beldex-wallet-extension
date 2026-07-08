@@ -9,6 +9,8 @@ import { Receive } from './Receive'
 import { truncateMiddle } from '../../lib/format'
 import { getBdxPriceUsdt } from '../../lib/price'
 import { getPidLabels } from '../../lib/pidLabels'
+import { looksLikeBnsName, resolveBnsWallet } from '../../lib/bns'
+import { decodeAddress } from '../../lib/bridge'
 
 const ATOMIC = 1e9 // 1 BDX = 1e9 atomic units
 const POLL_MS = 10_000 // Beldex block time ~30s; poll LWS every 10s while popup is open
@@ -75,6 +77,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
   const [txs, setTxs] = useState<Tx[]>([])
   const [creds, setCreds] = useState<lws.Credentials | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [loadedOnce, setLoadedOnce] = useState(false)
   const [copied, setCopied] = useState(false)
   const [hideBalance, setHideBalance] = useState(() => localStorage.getItem('hideBalance') === '1')
   const [price, setPrice] = useState<number | null>(null)
@@ -89,6 +92,9 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
 
   // send form
   const [to, setTo] = useState('')
+  const [resolved, setResolved] = useState<{ name: string; address: string } | null>(null)
+  const [resolving, setResolving] = useState(false)
+  const [resolveErr, setResolveErr] = useState('')
   const [amount, setAmount] = useState('')
   const [flash, setFlash] = useState(false)
   const [sending, setSending] = useState(false)
@@ -142,6 +148,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       setError(`LWS error: ${e.message}`)
     } finally {
       setRefreshing(false)
+      setLoadedOnce(true)
     }
   }
 
@@ -177,15 +184,52 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
     copyTimer.current = setTimeout(() => setCopied(false), 1500)
   }
 
+  // Live BNS resolution: debounce the recipient field; if it looks like a name,
+  // resolve it via the daemon and show what it points at before sending.
+  useEffect(() => {
+    setResolved(null); setResolveErr('')
+    const input = to.trim()
+    if (!input || !looksLikeBnsName(input)) return
+    const t = setTimeout(async () => {
+      setResolving(true)
+      try {
+        const addr = await resolveBnsWallet(input)
+        if (addr) {
+          await decodeAddress(addr) // sanity: daemon must return a valid address
+          setResolved({ name: input.toLowerCase(), address: addr })
+        } else {
+          setResolveErr(`No wallet record for "${input}"`)
+        }
+      } catch (e: any) {
+        setResolveErr(`BNS lookup failed: ${e.message}`)
+      } finally {
+        setResolving(false)
+      }
+    }, 500)
+    return () => clearTimeout(t)
+  }, [to])
+
   const doSend = async () => {
     setError(''); setTxResult(''); setSending(true)
     setSendPhase('sending'); setSendStepCode(0); setSendError(''); setHashCopied(false)
     try {
       const s = await sendToBackground({ type: 'GET_SECRETS' })
       if (!s.ok || !s.secrets) { onLocked(); return }
+
+      // Recipient: raw address, or a BNS name resolved to its wallet address.
+      let target = to.trim()
+      if (looksLikeBnsName(target)) {
+        const addr = resolved?.name === target.toLowerCase()
+          ? resolved.address
+          : await resolveBnsWallet(target)
+        if (!addr) throw new Error(`Could not resolve BNS name "${target}"`)
+        await decodeAddress(addr) // must be a valid Beldex address
+        target = addr
+      }
+
       const r = await sendFunds({
         secrets: s.secrets,
-        toAddress: to.trim(),
+        toAddress: target,
         amount: amount.trim(), // display units, e.g. "1.25"
         priority: flash ? 5 : 1, // 5 = flash (instant) per wallet2.h tx_priority_flash
         onStatus: code => setSendStepCode(code)
@@ -234,6 +278,15 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
           <button className="btn-icon" title="Switch wallet" onClick={() => setShowWallets(true)}>
             {walletName || 'Wallet'} ▾
           </button>
+          {!new URLSearchParams(location.search).has('tab') && (
+            <button className="btn-icon" title="Open full screen"
+              onClick={async () => {
+                await chrome.tabs.create({ url: chrome.runtime.getURL('panel.html?tab=1') })
+                window.close() // close the side panel; the tab takes over
+              }}>
+              ⛶
+            </button>
+          )}
           <button className="btn-icon" title="Settings" onClick={() => setView(view === 'settings' ? 'home' : 'settings')}>
             ⚙
           </button>
@@ -255,10 +308,12 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
           {info
             ? <>block {scanned.toLocaleString()} / {chainHeight.toLocaleString()}{' '}
                 <span className="live">{synced ? '● synced' : '◌ scanning…'}</span></>
-            : 'connecting…'}
+            : <span className="skel" style={{ width: 150, height: 10 }} />}
         </div>
         <div className="balance">
-          {balance === null ? '—' : mask(fmtBDX(balance))} <span className="unit">BDX</span>
+          {balance === null
+            ? <span className="skel" style={{ width: 130, height: 24, verticalAlign: 'middle' }} />
+            : mask(fmtBDX(balance))} <span className="unit">BDX</span>
           <button className="eye-btn" title={hideBalance ? 'Show balance' : 'Hide balance'} onClick={toggleHide}>
             {hideBalance ? (
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -272,15 +327,21 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
             )}
           </button>
         </div>
-        {price !== null && (
+        {price !== null ? (
           <div className="fiat">
             {balance !== null && <>≈ <b>{mask((balance / ATOMIC * price).toFixed(2))} USDT</b> · </>}
             1 BDX = {price.toFixed(4)} USDT
           </div>
-        )}
+        ) : !loadedOnce ? (
+          <div className="fiat"><span className="skel" style={{ width: 170, height: 10 }} /></div>
+        ) : null}
         <div className="sub-balances">
-          <span>Unlocked <b className="ok">{unlocked === null ? '—' : mask(fmtBDX(unlocked))}</b></span>
-          <span>Locked <b className="warn">{balance === null ? '—' : mask(fmtBDX(locked))}</b></span>
+          <span>Unlocked <b className="ok">
+            {unlocked === null ? <span className="skel" style={{ width: 44, height: 10 }} /> : mask(fmtBDX(unlocked))}
+          </b></span>
+          <span>Locked <b className="warn">
+            {balance === null ? <span className="skel" style={{ width: 44, height: 10 }} /> : mask(fmtBDX(locked))}
+          </b></span>
         </div>
         <button className="btn-icon" disabled={refreshing} onClick={() => creds && refresh(creds)}>
           {refreshing ? '…' : '↻ refresh'}
@@ -309,7 +370,17 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
             </div>
           </div>
           <div className="card history-card">
-            {(() => {
+            {!loadedOnce && txs.length === 0 && [0, 1, 2, 3].map(i => (
+              <div className="skel-row" key={i}>
+                <span className="skel skel-circle" />
+                <span style={{ flex: 1 }}>
+                  <span className="skel" style={{ width: '85%', height: 9, marginBottom: 5 }} />
+                  <span className="skel" style={{ width: 60, height: 8, display: 'block' }} />
+                </span>
+                <span className="skel" style={{ width: 52, height: 12 }} />
+              </div>
+            ))}
+            {loadedOnce && (() => {
               const filtered = txs.filter(tx => {
                 const incoming = Number(tx.total_received ?? 0) - Number(tx.total_sent ?? 0) >= 0
                 return txFilter === 'all' || (txFilter === 'in' ? incoming : !incoming)
@@ -345,7 +416,14 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       {view === 'send' && (
         <div className="card">
           <h2>Send BDX</h2>
-          <input placeholder="Recipient address" value={to} onChange={e => setTo(e.target.value)} />
+          <input placeholder="Recipient address or BNS name" value={to} onChange={e => setTo(e.target.value)} />
+          {resolving && <p className="muted" style={{ marginTop: -6 }}>Resolving name…</p>}
+          {resolved && (
+            <p className="ok" style={{ marginTop: -6 }}>
+              ✓ {resolved.name} → {truncateMiddle(resolved.address, 10)}
+            </p>
+          )}
+          {resolveErr && <p className="warn" style={{ marginTop: -6 }}>{resolveErr}</p>}
           <input placeholder="Amount (BDX)" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} />
           <label className="checkbox">
             <input type="checkbox" checked={flash} onChange={e => setFlash(e.target.checked)} />
