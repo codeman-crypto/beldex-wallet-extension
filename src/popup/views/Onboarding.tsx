@@ -4,7 +4,10 @@ import { sendToBackground, WalletSecrets } from '../../lib/messages'
 
 export function Onboarding({ onDone, addMode = false, onCancel }:
   { onDone: () => void; addMode?: boolean; onCancel?: () => void }) {
-  const [mode, setMode] = useState<'menu' | 'create' | 'restore'>('menu')
+  const [mode, setMode] = useState<'menu' | 'create' | 'confirm' | 'restore'>('menu')
+  // seed confirmation quiz: 5 random word positions the user must re-enter
+  const [quizIdx, setQuizIdx] = useState<number[]>([])
+  const [quizAnswers, setQuizAnswers] = useState<string[]>([])
   const [mnemonic, setMnemonic] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
@@ -17,6 +20,17 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
     const r = await sendToBackground({ type: 'SAVE_WALLET', secrets, password, name: name.trim() || undefined })
     if (r.ok) onDone()
     else setError(r.error)
+  }
+
+  /** Move from seed display to the confirmation quiz: 5 random distinct word positions. */
+  const startQuiz = () => {
+    if (password.length < 8) { setError('Password must be at least 8 characters'); return }
+    setError('')
+    const positions = new Set<number>()
+    while (positions.size < 5) positions.add(Math.floor(Math.random() * 25))
+    setQuizIdx([...positions].sort((a, b) => a - b))
+    setQuizAnswers(['', '', '', '', ''])
+    setMode('confirm')
   }
 
   if (mode === 'menu') {
@@ -71,9 +85,49 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
           onChange={e => setName(e.target.value)} />
         <input type="password" placeholder="Choose a password (min 8 chars)" value={password}
           onChange={e => setPassword(e.target.value)} />
-        <button className="btn-primary" onClick={() => save(pending)}>
+        <button className="btn-primary" onClick={startQuiz}>
           I saved my seed — continue
         </button>
+        {error && <p className="error">{error}</p>}
+      </div>
+    )
+  }
+
+  if (mode === 'confirm' && pending) {
+    const words = pending.mnemonic.trim().split(/\s+/)
+    const check = () => {
+      const wrong = quizIdx.filter((wordPos, i) =>
+        quizAnswers[i].trim().toLowerCase() !== words[wordPos].toLowerCase())
+      if (wrong.length > 0) {
+        setError(`Word${wrong.length > 1 ? 's' : ''} #${wrong.map(w => w + 1).join(', #')} ${wrong.length > 1 ? 'are' : 'is'} incorrect — check your backup`)
+        return
+      }
+      setError('')
+      save(pending)
+    }
+    return (
+      <div className="wrap">
+        <h2>Confirm your seed</h2>
+        <p className="muted">
+          Enter the requested words from your recovery seed to confirm you saved it.
+        </p>
+        {quizIdx.map((wordPos, i) => (
+          <input key={wordPos} placeholder={`Word #${wordPos + 1}`} autoCapitalize="off"
+            value={quizAnswers[i]}
+            onChange={e => {
+              const next = [...quizAnswers]
+              next[i] = e.target.value
+              setQuizAnswers(next)
+            }} />
+        ))}
+        <div className="row">
+          <button className="btn-ghost" onClick={() => { setError(''); setMode('create') }}>
+            Back to seed
+          </button>
+          <button className="btn-primary" disabled={quizAnswers.some(a => !a.trim())} onClick={check}>
+            Confirm
+          </button>
+        </div>
         {error && <p className="error">{error}</p>}
       </div>
     )

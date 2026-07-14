@@ -1,12 +1,20 @@
 import { useState } from 'react'
 import { sendToBackground, WalletMeta } from '../../lib/messages'
 import { truncateMiddle } from '../../lib/format'
+import { Onboarding } from './Onboarding'
 
 export function Unlock({ walletName, wallets, onChanged }:
   { walletName: string; wallets: WalletMeta[]; onChanged: () => void }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [adding, setAdding] = useState(false)
+
+  // "Create new wallet" from the login screen: full onboarding (create/restore
+  // + seed quiz), saved as an additional wallet alongside the locked ones.
+  if (adding) {
+    return <Onboarding addMode onDone={onChanged} onCancel={() => setAdding(false)} />
+  }
 
   const others = wallets.filter(w => !w.active)
 
@@ -43,6 +51,10 @@ export function Unlock({ walletName, wallets, onChanged }:
         </button>
         {error && <p className="error" style={{ marginBottom: 0 }}>{error}</p>}
       </div>
+
+      <button className="btn-ghost" style={{ width: '100%' }} onClick={() => setAdding(true)}>
+        + Create new wallet
+      </button>
 
       {others.length > 0 && (
         <>
