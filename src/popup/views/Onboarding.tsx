@@ -146,9 +146,12 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
         onChange={e => setName(e.target.value)} />
       <input type="password" placeholder="Choose a password (min 8 chars)" value={password}
         onChange={e => setPassword(e.target.value)} />
+      <input type="password" placeholder="Confirm password" value={confirmPassword}
+        onChange={e => setConfirmPassword(e.target.value)} />
       <div className="row">
         <button className="btn-ghost" onClick={() => { setError(''); setMode('menu') }}>Back</button>
         <button className="btn-primary" onClick={async () => {
+          if (password !== confirmPassword) { setError('Passwords do not match'); return }
           try { await save(await restoreFromMnemonic(mnemonic.trim())) }
           catch (e: any) { setError(e.message) }
         }}>Restore</button>
