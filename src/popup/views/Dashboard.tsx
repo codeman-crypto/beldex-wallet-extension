@@ -97,6 +97,10 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
   const [resolveErr, setResolveErr] = useState('')
   const [amount, setAmount] = useState('')
   const [flash, setFlash] = useState(false)
+  // review-before-send modal: target='' while a BNS name is still resolving
+  const [review, setReview] = useState<{ target: string; name?: string } | null>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewErr, setReviewErr] = useState('')
   const [sending, setSending] = useState(false)
   const [sendPhase, setSendPhase] = useState<'idle' | 'sending' | 'success' | 'error'>('idle')
   const [sendStepCode, setSendStepCode] = useState(0)
@@ -209,23 +213,38 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
     return () => clearTimeout(t)
   }, [to])
 
-  const doSend = async () => {
+  /**
+   * Opens the review modal. BNS names are re-resolved fresh HERE, at the moment
+   * of review, so a stale earlier resolution can never be the thing confirmed.
+   */
+  const openReview = async () => {
+    setError(''); setReviewErr('')
+    const input = to.trim()
+    if (looksLikeBnsName(input)) {
+      setReview({ target: '', name: input.toLowerCase() })
+      setReviewLoading(true)
+      try {
+        const addr = await resolveBnsWallet(input)
+        if (!addr) throw new Error(`Could not resolve BNS name "${input}"`)
+        await decodeAddress(addr) // must be a valid Beldex address
+        setReview({ target: addr, name: input.toLowerCase() })
+      } catch (e: any) {
+        setReviewErr(e.message)
+      } finally {
+        setReviewLoading(false)
+      }
+    } else {
+      setReview({ target: input })
+    }
+  }
+
+  // Broadcasts to an already-reviewed, confirmed target address.
+  const doSend = async (target: string) => {
     setError(''); setTxResult(''); setSending(true)
     setSendPhase('sending'); setSendStepCode(0); setSendError(''); setHashCopied(false)
     try {
       const s = await sendToBackground({ type: 'GET_SECRETS' })
       if (!s.ok || !s.secrets) { onLocked(); return }
-
-      // Recipient: raw address, or a BNS name resolved to its wallet address.
-      let target = to.trim()
-      if (looksLikeBnsName(target)) {
-        const addr = resolved?.name === target.toLowerCase()
-          ? resolved.address
-          : await resolveBnsWallet(target)
-        if (!addr) throw new Error(`Could not resolve BNS name "${target}"`)
-        await decodeAddress(addr) // must be a valid Beldex address
-        target = addr
-      }
 
       const r = await sendFunds({
         secrets: s.secrets,
@@ -431,13 +450,66 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
           </label>
           <div className="row">
             <button className="btn-ghost" disabled={sending} onClick={() => setView('home')}>Back</button>
-            <button className="btn-primary" disabled={sending || !to.trim() || !amount.trim()} onClick={doSend}>
+            <button className="btn-primary" disabled={sending || !to.trim() || !amount.trim()} onClick={openReview}>
               {sending ? 'Sending…' : 'Send'}
             </button>
           </div>
         </div>
       )}
       </>}
+
+      {review && sendPhase === 'idle' && (
+        <div className="modal-overlay" onClick={() => setReview(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Review transaction</h2>
+
+            {review.name && (
+              <div className="detail-row">
+                <span className="muted">BNS name</span>
+                <span className="ok">{review.name}</span>
+              </div>
+            )}
+
+            <p className="muted" style={{ margin: '10px 0 4px' }}>
+              {review.name ? 'Resolves to' : 'Recipient'}
+            </p>
+            {reviewLoading ? (
+              <p className="muted">Resolving name…</p>
+            ) : reviewErr ? (
+              <p className="error">{reviewErr}</p>
+            ) : (
+              // full address, untruncated — this is exactly what will receive the funds
+              <div className="seed" style={{ wordBreak: 'break-all' }}>{review.target}</div>
+            )}
+
+            <div className="detail-row">
+              <span className="muted">Amount</span>
+              <span><b>{amount.trim()} BDX</b></span>
+            </div>
+            <div className="detail-row">
+              <span className="muted">Priority</span>
+              <span>{flash ? '⚡ Flash (instant)' : 'Normal'}</span>
+            </div>
+
+            <p className="warn" style={{ marginTop: 10 }}>
+              ⚠ Transactions are irreversible. Verify the full recipient address before confirming.
+            </p>
+
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn-ghost" onClick={() => setReview(null)}>Cancel</button>
+              <button className="btn-primary"
+                disabled={reviewLoading || !!reviewErr || !review.target}
+                onClick={() => {
+                  const target = review.target
+                  setReview(null)
+                  doSend(target)
+                }}>
+                Confirm send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {sendPhase !== 'idle' && (
         <div className="modal-overlay">
