@@ -11,6 +11,7 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
   const [mnemonic, setMnemonic] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [pending, setPending] = useState<WalletSecrets | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -25,6 +26,7 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
   /** Move from seed display to the confirmation quiz: 5 random distinct word positions. */
   const startQuiz = () => {
     if (password.length < 8) { setError('Password must be at least 8 characters'); return }
+    if (password !== confirmPassword) { setError('Passwords do not match'); return }
     setError('')
     const positions = new Set<number>()
     while (positions.size < 5) positions.add(Math.floor(Math.random() * 25))
@@ -85,6 +87,8 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
           onChange={e => setName(e.target.value)} />
         <input type="password" placeholder="Choose a password (min 8 chars)" value={password}
           onChange={e => setPassword(e.target.value)} />
+        <input type="password" placeholder="Confirm password" value={confirmPassword}
+          onChange={e => setConfirmPassword(e.target.value)} />
         <button className="btn-primary" onClick={startQuiz}>
           I saved my seed — continue
         </button>
