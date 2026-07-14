@@ -2,6 +2,37 @@ import { useState } from 'react'
 import { createWallet, restoreFromMnemonic } from '../../lib/bridge'
 import { sendToBackground, WalletSecrets } from '../../lib/messages'
 
+/** Cheap length + character-class heuristic — deliberately no zxcvbn-style dependency. */
+function passwordStrength(pw: string): { label: string; color: string; pct: number } | null {
+  if (!pw) return null
+  let classes = 0
+  if (/[a-z]/.test(pw)) classes++
+  if (/[A-Z]/.test(pw)) classes++
+  if (/[0-9]/.test(pw)) classes++
+  if (/[^a-zA-Z0-9]/.test(pw)) classes++
+  let score = 0
+  if (pw.length >= 8) score++
+  if (pw.length >= 12) score++
+  if (pw.length >= 16) score++
+  score += classes >= 3 ? 2 : classes >= 2 ? 1 : 0
+  if (score <= 1) return { label: 'weak', color: 'var(--red)', pct: 33 }
+  if (score <= 3) return { label: 'fair', color: '#f5a623', pct: 66 }
+  return { label: 'strong', color: 'var(--green)', pct: 100 }
+}
+
+function StrengthHint({ password }: { password: string }) {
+  const s = passwordStrength(password)
+  if (!s) return null
+  return (
+    <div style={{ marginTop: -6, marginBottom: 10 }}>
+      <div style={{ height: 3, background: '#1c1c1c' }}>
+        <div style={{ height: '100%', width: `${s.pct}%`, background: s.color, transition: 'width 0.2s, background 0.2s' }} />
+      </div>
+      <span style={{ fontSize: 10, color: s.color }}>{s.label}</span>
+    </div>
+  )
+}
+
 export function Onboarding({ onDone, addMode = false, onCancel }:
   { onDone: () => void; addMode?: boolean; onCancel?: () => void }) {
   const [mode, setMode] = useState<'menu' | 'create' | 'confirm' | 'restore'>('menu')
@@ -87,6 +118,7 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
           onChange={e => setName(e.target.value)} />
         <input type="password" placeholder="Choose a password (min 8 chars)" value={password}
           onChange={e => setPassword(e.target.value)} />
+        <StrengthHint password={password} />
         <input type="password" placeholder="Confirm password" value={confirmPassword}
           onChange={e => setConfirmPassword(e.target.value)} />
         <button className="btn-primary" onClick={startQuiz}>
@@ -146,6 +178,7 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
         onChange={e => setName(e.target.value)} />
       <input type="password" placeholder="Choose a password (min 8 chars)" value={password}
         onChange={e => setPassword(e.target.value)} />
+      <StrengthHint password={password} />
       <input type="password" placeholder="Confirm password" value={confirmPassword}
         onChange={e => setConfirmPassword(e.target.value)} />
       <div className="row">

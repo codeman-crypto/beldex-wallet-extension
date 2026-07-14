@@ -90,6 +90,41 @@ async function endSession(): Promise<void> {
   await chrome.alarms.clear(ALARM_LOCK)
 }
 
+// ---- brute-force backoff --------------------------------------------------------
+//
+// In-memory only: the Map resets whenever the service worker restarts (~30s
+// idle). That's acceptable — this is friction against rapid scripted guessing
+// through the message channel; the real defense is the PBKDF2-600k KDF.
+
+const failedAttempts = new Map<string, { fails: number; nextAllowedAt: number }>()
+const BACKOFF_THRESHOLD = 5
+const BACKOFF_CAP_MS = 60_000
+
+/** Returns an error message if this wallet is still in backoff, else null. */
+function backoffCheck(walletId: string): string | null {
+  const e = failedAttempts.get(walletId)
+  if (e && Date.now() < e.nextAllowedAt) {
+    const secs = Math.ceil((e.nextAllowedAt - Date.now()) / 1000)
+    return `Too many attempts — try again in ${secs}s`
+  }
+  return null
+}
+
+function backoffRecordFailure(walletId: string): void {
+  const e = failedAttempts.get(walletId) ?? { fails: 0, nextAllowedAt: 0 }
+  e.fails++
+  if (e.fails >= BACKOFF_THRESHOLD) {
+    // 5th failure -> 2s, then 4s, 8s, ... capped at 60s
+    const delay = Math.min(2 ** (e.fails - BACKOFF_THRESHOLD + 1) * 1000, BACKOFF_CAP_MS)
+    e.nextAllowedAt = Date.now() + delay
+  }
+  failedAttempts.set(walletId, e)
+}
+
+function backoffReset(walletId: string): void {
+  failedAttempts.delete(walletId)
+}
+
 // ---- auto-lock ----------------------------------------------------------------
 
 const AUTOLOCK_KEY = 'auto_lock_minutes'
@@ -182,15 +217,19 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       const wallets = await getWallets()
       const activeId = await getActiveId()
       if (!activeId) return { ok: false, error: 'No wallet stored' }
+      const wait = backoffCheck(activeId)
+      if (wait) return { ok: false, error: wait }
       try {
         const secrets: WalletSecrets = JSON.parse(await decryptVault(wallets[activeId].vault, req.password))
         if (!wallets[activeId].address && secrets.address) {
           wallets[activeId].address = secrets.address // backfill migrated wallet
           await setWallets(wallets)
         }
+        backoffReset(activeId)
         await startSession(activeId, secrets)
         return stateResponse()
       } catch {
+        backoffRecordFailure(activeId)
         return { ok: false, error: 'Incorrect password' }
       }
     }
@@ -211,10 +250,14 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       const wallets = await getWallets()
       const activeId = await getActiveId()
       if (!activeId) return { ok: false, error: 'No wallet stored' }
+      const wait = backoffCheck(activeId)
+      if (wait) return { ok: false, error: wait }
       try {
         const secrets: WalletSecrets = JSON.parse(await decryptVault(wallets[activeId].vault, req.password))
+        backoffReset(activeId)
         return { ok: true, secrets }
       } catch {
+        backoffRecordFailure(activeId)
         return { ok: false, error: 'Incorrect password' }
       }
     }
