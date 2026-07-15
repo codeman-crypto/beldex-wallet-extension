@@ -5,7 +5,9 @@
   "description": "Beldex wallet browser extension (Manifest V3) built on the Beldex LWS wasm core",
   "scripts": {
     "postinstall": "patch-package",
-    "build": "webpack --mode=production",
+    "build": "npm run build:chrome && npm run build:firefox",
+    "build:chrome": "webpack --mode=production",
+    "build:firefox": "webpack --mode=production --env firefox",
     "dev": "webpack --mode=development --watch",
     "typecheck": "tsc --noEmit"
   },

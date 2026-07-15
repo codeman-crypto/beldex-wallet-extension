@@ -2,13 +2,22 @@ const path = require('path')
 const CopyPlugin = require('copy-webpack-plugin')
 const webpack = require('webpack')
 
-module.exports = {
+// Two targets from one codebase: Chrome (side_panel) -> dist/, Firefox
+// (sidebar_action + gecko id) -> firefox/. Only the manifest differs; panel.js
+// and background.js are byte-identical (platform.ts feature-detects at runtime).
+//   npm run build:chrome | build:firefox | build (both)
+module.exports = (env = {}) => {
+  const firefox = env.firefox === true || env.firefox === 'true'
+  const outDir = firefox ? 'firefox' : 'dist'
+  const manifestSrc = firefox ? 'public/manifest.firefox.json' : 'public/manifest.chrome.json'
+
+  return {
   entry: {
     panel: './src/popup/index.tsx',
     background: './src/background/index.ts'
   },
   output: {
-    path: path.resolve(__dirname, 'dist'),
+    path: path.resolve(__dirname, outDir),
     filename: '[name].js',
     clean: true
   },
@@ -35,7 +44,7 @@ module.exports = {
     }),
     new CopyPlugin({
       patterns: [
-        { from: 'public/manifest.json', to: 'manifest.json' },
+        { from: manifestSrc, to: 'manifest.json' },
         { from: 'public/panel.html', to: 'panel.html' },
         { from: 'public/icons', to: 'icons' },
         // Fonts bundled locally — MV3 forbids loading remote fonts.
@@ -53,4 +62,5 @@ module.exports = {
     })
   ],
   performance: { hints: false }
+  }
 }
