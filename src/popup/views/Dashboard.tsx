@@ -11,6 +11,7 @@ import { getBdxPriceUsdt } from '../../lib/price'
 import { getPidLabels } from '../../lib/pidLabels'
 import { looksLikeBnsName, resolveBnsWallet } from '../../lib/bns'
 import { decodeAddress } from '../../lib/bridge'
+import { closePanel } from '../../lib/platform'
 
 const ATOMIC = 1e9 // 1 BDX = 1e9 atomic units
 const POLL_MS = 10_000 // Beldex block time ~30s; poll LWS every 10s while popup is open
@@ -308,7 +309,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
             <button className="btn-icon" title="Open full screen"
               onClick={async () => {
                 await chrome.tabs.create({ url: chrome.runtime.getURL('panel.html?tab=1') })
-                window.close() // close the side panel; the tab takes over
+                closePanel() // close the side panel/sidebar; the tab takes over
               }}>
               ⛶
             </button>

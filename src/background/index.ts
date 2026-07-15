@@ -14,11 +14,10 @@ import { encryptVault, decryptVault, Vault } from '../lib/keyring'
 import { CONFIG } from '../lib/config'
 import * as lws from '../lib/lws'
 import type { BgRequest, BgResponse, WalletMeta, WalletSecrets, WalletState } from '../lib/messages'
+import { wireToolbarOpensPanel } from '../lib/platform'
 
-// Open the side panel when the toolbar icon is clicked (Chrome 114+).
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch(() => { /* older Chrome — icon does nothing; panel still openable via context menu */ })
+// Open the panel when the toolbar icon is clicked (Chrome side panel / Firefox sidebar).
+wireToolbarOpensPanel()
 
 const LEGACY_VAULT_KEY = 'beldex_vault'
 const WALLETS_KEY = 'wallets'
