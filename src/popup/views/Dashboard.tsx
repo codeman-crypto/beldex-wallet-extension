@@ -149,7 +149,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       setTxs(list)
       setError('')
     } catch (e: any) {
-      setError(`Wallet server unreachable (${e.message}) — retrying…`)
+      setError(`rpc node unreachable (${e.message}) — retrying…`)
     } finally {
       setRefreshing(false)
       setLoadedOnce(true)
@@ -177,7 +177,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
         } catch (e: any) {
           // server down/unreachable — keep polling below so we recover
           // automatically once it responds again
-          setError(`Wallet server unreachable (${e.message}) — retrying…`)
+          setError(`rpc node unreachable (${e.message}) — retrying…`)
           setLoadedOnce(true)
         }
         timer = setInterval(() => refresh(c), POLL_MS)
