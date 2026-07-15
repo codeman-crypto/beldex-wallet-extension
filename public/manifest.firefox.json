@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Beldex Wallet",
+  "version": "0.1.0",
+  "description": "A light wallet for Beldex (BDX). Non-custodial: spend keys never leave your browser.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "beldex-wallet@beldex.io",
+      "strict_min_version": "115.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Beldex Wallet",
+    "default_icon": "icons/icon48.png"
+  },
+  "sidebar_action": {
+    "default_title": "Beldex Wallet",
+    "default_panel": "panel.html",
+    "default_icon": "icons/icon48.png"
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": [
+    "https://lwsapi.beldex.io/*",
+    "https://explorer.beldex.io/*",
+    "https://api.coingecko.com/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}
