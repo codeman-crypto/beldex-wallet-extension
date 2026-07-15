@@ -31,14 +31,22 @@ popup (window context)                     background service worker
 
 ```bash
 npm install
-npm run build
+npm run build          # builds both browsers
+# or individually:
+npm run build:chrome   # -> dist/
+npm run build:firefox  # -> firefox/
 ```
 
-Then in Chrome: `chrome://extensions` → enable Developer mode → **Load unpacked** → select `dist/`.
+- **Chrome/Edge/Brave:** `chrome://extensions` → enable Developer mode → **Load unpacked** → select `dist/`.
+- **Firefox:** `about:debugging` → This Firefox → **Load Temporary Add-on** → select `firefox/manifest.json`.
+
+Both targets share the same `panel.js`/`background.js`; only the manifest differs
+(Chrome `side_panel` vs Firefox `sidebar_action` + a `gecko` id). The panel-open and
+panel-close differences are handled at runtime in `src/lib/platform.ts`.
 
 **Before first use:** set `LWS_URL` in `src/lib/config.ts` to a running Beldex light-wallet
 server (the backend beldex-lws-frontend uses), and narrow `host_permissions` in
-`public/manifest.json` to that host.
+`public/manifest.chrome.json` / `public/manifest.firefox.json` to that host.
 
 ## What works / what's stubbed
 
