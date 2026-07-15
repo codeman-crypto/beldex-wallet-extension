@@ -229,6 +229,19 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
   const openReview = async () => {
     setError(''); setReviewErr('')
     const input = to.trim()
+    const amt = amount.trim()
+
+    // --- amount validation ---
+    if (!/^\d*\.?\d+$/.test(amt)) { setError('Enter a valid amount'); return }
+    const amtNum = parseFloat(amt)
+    if (!Number.isFinite(amtNum) || amtNum <= 0) { setError('Amount must be greater than 0'); return }
+    if ((amt.split('.')[1]?.length ?? 0) > 9) { setError('BDX supports at most 9 decimal places'); return }
+    const amtAtomic = Math.round(amtNum * ATOMIC)
+    if (unlocked !== null && amtAtomic > unlocked) {
+      setError(`Amount exceeds your unlocked balance (${fmtBDX(unlocked)} BDX)`); return
+    }
+
+    // --- recipient validation: BNS name (re-resolved) or a raw address ---
     if (looksLikeBnsName(input)) {
       setReview({ target: '', name: input.toLowerCase() })
       setReviewLoading(true)
@@ -243,6 +256,11 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
         setReviewLoading(false)
       }
     } else {
+      try {
+        await decodeAddress(input) // rejects malformed / wrong-network addresses
+      } catch {
+        setError('Invalid Beldex address'); return
+      }
       setReview({ target: input })
     }
   }
