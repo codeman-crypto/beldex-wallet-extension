@@ -5,8 +5,7 @@
   "description": "A light wallet for Beldex (BDX). Non-custodial: spend keys never leave your browser.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "beldex-wallet@beldex.io",
-      "strict_min_version": "115.0"
+      "id": "beldex-wallet@beldex.io"
     }
   },
   "icons": {
