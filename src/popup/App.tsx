@@ -9,20 +9,43 @@ export function App() {
   const [address, setAddress] = useState<string>('')
   const [walletName, setWalletName] = useState<string>('')
   const [wallets, setWallets] = useState<WalletMeta[]>([])
+  const [error, setError] = useState<string>('')
 
   const refresh = async () => {
-    const r = await sendToBackground({ type: 'GET_STATE' })
-    if (r.ok && r.state) {
-      setState(r.state)
-      setAddress(r.address ?? '')
-      setWalletName(r.walletName ?? '')
-      setWallets(r.wallets ?? [])
+    try {
+      const r = await sendToBackground({ type: 'GET_STATE' })
+      if (r.ok && r.state) {
+        setError('')
+        setState(r.state)
+        setAddress(r.address ?? '')
+        setWalletName(r.walletName ?? '')
+        setWallets(r.wallets ?? [])
+      } else if (!r.ok) {
+        // don't hang on "Loading…" — surface why the background couldn't respond
+        setError(r.error)
+      }
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not reach the wallet background')
     }
   }
 
   useEffect(() => { refresh() }, [])
 
-  if (state === 'loading') return <Screen><p className="muted center" style={{ paddingTop: 100 }}>Loading…</p></Screen>
+  if (state === 'loading') {
+    return (
+      <Screen>
+        <p className="muted center" style={{ paddingTop: 100 }}>
+          {error ? '' : 'Loading…'}
+        </p>
+        {error && (
+          <div className="center" style={{ paddingTop: 60 }}>
+            <p className="error">{error}</p>
+            <button className="btn-ghost" onClick={refresh}>Retry</button>
+          </div>
+        )}
+      </Screen>
+    )
+  }
   if (state === 'uninitialized') return <Onboarding onDone={refresh} />
   if (state === 'locked') return <Unlock walletName={walletName} wallets={wallets} onChanged={refresh} />
   // key= forces a clean remount when switching between wallets
