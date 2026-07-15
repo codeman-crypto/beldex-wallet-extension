@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { sendToBackground, WalletSecrets } from '../../lib/messages'
-import { truncateMiddle } from '../../lib/format'
+import { truncateUnlessTab } from '../../lib/format'
 import { copySecret } from '../../lib/clipboard'
 
 const REVEAL_SECONDS = 30 // revealed secrets auto-hide after this long
@@ -158,7 +158,7 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
                     // mask each seed word individually so the block wraps like real words
                     ? value.split(/\s+/).map(w => '•'.repeat(Math.min(w.length, 8))).join(' ')
                     : '•'.repeat(15) + '...' + '•'.repeat(15))
-                : item === 'seed' ? value : truncateMiddle(value)}
+                : item === 'seed' ? value : truncateUnlessTab(value)}
             </div>
             <p className="warn">⚠ {cfg.note}</p>
             <div className="row">

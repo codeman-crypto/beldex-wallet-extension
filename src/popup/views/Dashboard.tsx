@@ -6,7 +6,7 @@ import * as lws from '../../lib/lws'
 import { sendFunds, SEND_STEPS } from '../../lib/send'
 import { Settings } from './Settings'
 import { Receive } from './Receive'
-import { truncateMiddle } from '../../lib/format'
+import { truncateMiddle, truncateUnlessTab } from '../../lib/format'
 import { getBdxPriceUsdt } from '../../lib/price'
 import { getPidLabels } from '../../lib/pidLabels'
 import { looksLikeBnsName, resolveBnsWallet } from '../../lib/bns'
@@ -375,7 +375,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
           {refreshing ? '…' : '↻ refresh'}
         </button>
         <div className="addr">
-          <span title={address}>{truncateMiddle(address)}</span>
+          <span title={address}>{truncateUnlessTab(address)}</span>
           <button className="btn-icon" onClick={copyAddress}>{copied ? '✓' : '⧉'}</button>
         </div>
       </div>
