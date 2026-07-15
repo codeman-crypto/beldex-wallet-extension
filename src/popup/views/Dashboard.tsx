@@ -163,7 +163,8 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
     ;(async () => {
       try {
         // Instant display from the background sync cache while we fetch fresh data.
-        const cached = (await chrome.storage.session.get('sync_cache'))['sync_cache']
+        // storage.session may be absent (Firefox < 115); it's only an optimization.
+        const cached = (await (chrome.storage as any).session?.get('sync_cache'))?.['sync_cache']
         if (cached?.info && !cancelled) setInfo(cached.info)
 
         const s = await sendToBackground({ type: 'GET_SECRETS' })

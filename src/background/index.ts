@@ -15,6 +15,7 @@ import { CONFIG } from '../lib/config'
 import * as lws from '../lib/lws'
 import type { BgRequest, BgResponse, WalletMeta, WalletSecrets, WalletState } from '../lib/messages'
 import { wireToolbarOpensPanel } from '../lib/platform'
+import { sessionStore } from '../lib/sessionStore'
 
 // Open the panel when the toolbar icon is clicked (Chrome side panel / Firefox sidebar).
 wireToolbarOpensPanel()
@@ -73,18 +74,18 @@ async function walletList(): Promise<WalletMeta[]> {
 interface Session { walletId: string; secrets: WalletSecrets }
 
 async function getSession(): Promise<Session | null> {
-  const o = await chrome.storage.session.get(SESSION_KEY)
+  const o = await sessionStore.get(SESSION_KEY)
   return o[SESSION_KEY] ?? null
 }
 
 async function startSession(walletId: string, secrets: WalletSecrets): Promise<void> {
-  await chrome.storage.session.set({ [SESSION_KEY]: { walletId, secrets } })
+  await sessionStore.set({ [SESSION_KEY]: { walletId, secrets } })
   await touchAutoLock()
   chrome.alarms.create(ALARM_SYNC, { periodInMinutes: 0.5, delayInMinutes: 0 })
 }
 
 async function endSession(): Promise<void> {
-  await chrome.storage.session.remove([SESSION_KEY, CACHE_KEY])
+  await sessionStore.remove([SESSION_KEY, CACHE_KEY])
   await chrome.alarms.clear(ALARM_SYNC)
   await chrome.alarms.clear(ALARM_LOCK)
 }
@@ -146,8 +147,8 @@ async function syncOnce(): Promise<void> {
   const s = session.secrets
   try {
     const info = await lws.getAddressInfo({ address: s.address, view_key: s.secViewKey })
-    const prevCache = (await chrome.storage.session.get(CACHE_KEY))[CACHE_KEY]
-    await chrome.storage.session.set({ [CACHE_KEY]: { info, at: Date.now(), address: s.address } })
+    const prevCache = (await sessionStore.get(CACHE_KEY))[CACHE_KEY]
+    await sessionStore.set({ [CACHE_KEY]: { info, at: Date.now(), address: s.address } })
 
     // Notify on new incoming funds. Heuristic: total_received also grows from
     // change returned by our own outgoing txs, so skip when total_sent grew too.
