@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { sendToBackground, WalletSecrets } from '../../lib/messages'
 import { truncateMiddle } from '../../lib/format'
+import { copySecret } from '../../lib/clipboard'
 
 const REVEAL_SECONDS = 30 // revealed secrets auto-hide after this long
 
@@ -116,7 +117,7 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
   }
 
   const copyValue = async (v: string) => {
-    await navigator.clipboard.writeText(v)
+    await copySecret(v) // secret material: auto-clears the clipboard after 60s
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -167,6 +168,9 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
                 {copied ? '✓ Copied' : 'Copy'}
               </button>
             </div>
+            <p className="muted center" style={{ marginTop: 6, fontSize: 10 }}>
+              Clipboard clears automatically in 60s
+            </p>
           </>
         )}
         {error && <p className="error">{error}</p>}
