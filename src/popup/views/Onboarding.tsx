@@ -36,9 +36,11 @@ function StrengthHint({ password }: { password: string }) {
 export function Onboarding({ onDone, addMode = false, onCancel }:
   { onDone: () => void; addMode?: boolean; onCancel?: () => void }) {
   const [mode, setMode] = useState<'menu' | 'create' | 'confirm' | 'restore'>('menu')
-  // seed confirmation quiz: 5 random word positions the user must re-enter
+  // seed confirmation quiz: 5 random word positions; their words are shown
+  // shuffled and must be tapped back in position order
   const [quizIdx, setQuizIdx] = useState<number[]>([])
-  const [quizAnswers, setQuizAnswers] = useState<string[]>([])
+  const [quizChoices, setQuizChoices] = useState<string[]>([])
+  const [quizPicked, setQuizPicked] = useState<number[]>([]) // indices into quizChoices, in tap order
   const [mnemonic, setMnemonic] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
@@ -58,11 +60,21 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
   const startQuiz = () => {
     if (password.length < 8) { setError('Password must be at least 8 characters'); return }
     if (password !== confirmPassword) { setError('Passwords do not match'); return }
+    if (!pending) return
     setError('')
+    const words = pending.mnemonic.trim().split(/\s+/)
     const positions = new Set<number>()
-    while (positions.size < 5) positions.add(Math.floor(Math.random() * 25))
-    setQuizIdx([...positions].sort((a, b) => a - b))
-    setQuizAnswers(['', '', '', '', ''])
+    while (positions.size < 5) positions.add(Math.floor(Math.random() * words.length))
+    const idx = [...positions].sort((a, b) => a - b)
+    // Fisher-Yates shuffle of the 5 words for display
+    const choices = idx.map(i => words[i])
+    for (let i = choices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[choices[i], choices[j]] = [choices[j], choices[i]]
+    }
+    setQuizIdx(idx)
+    setQuizChoices(choices)
+    setQuizPicked([])
     setMode('confirm')
   }
 
@@ -131,36 +143,62 @@ export function Onboarding({ onDone, addMode = false, onCancel }:
 
   if (mode === 'confirm' && pending) {
     const words = pending.mnemonic.trim().split(/\s+/)
+    const nextSlot = quizPicked.length // which position is being filled next
+
     const check = () => {
+      // compare by word text so duplicate words in the seed can't false-fail
       const wrong = quizIdx.filter((wordPos, i) =>
-        quizAnswers[i].trim().toLowerCase() !== words[wordPos].toLowerCase())
+        quizChoices[quizPicked[i]].toLowerCase() !== words[wordPos].toLowerCase())
       if (wrong.length > 0) {
-        setError(`Word${wrong.length > 1 ? 's' : ''} #${wrong.map(w => w + 1).join(', #')} ${wrong.length > 1 ? 'are' : 'is'} incorrect — check your backup`)
+        setError(`Word${wrong.length > 1 ? 's' : ''} #${wrong.map(w => w + 1).join(', #')} ${wrong.length > 1 ? 'are' : 'is'} wrong — check your backup and try again`)
+        setQuizPicked([])
         return
       }
       setError('')
       save(pending)
     }
+
     return (
       <div className="wrap">
         <h2>Confirm your seed</h2>
         <p className="muted">
-          Enter the requested words from your recovery seed to confirm you saved it.
+          Tap the words below in this order:{' '}
+          <b className="ok">{quizIdx.map(i => `#${i + 1}`).join(' → ')}</b>
         </p>
-        {quizIdx.map((wordPos, i) => (
-          <input key={wordPos} placeholder={`Word #${wordPos + 1}`} autoCapitalize="off"
-            value={quizAnswers[i]}
-            onChange={e => {
-              const next = [...quizAnswers]
-              next[i] = e.target.value
-              setQuizAnswers(next)
-            }} />
-        ))}
+
+        {/* slots: one per requested position, filled as the user taps */}
+        <div className="quiz-slots">
+          {quizIdx.map((wordPos, i) => (
+            <div key={wordPos} className={`quiz-slot ${i === nextSlot ? 'next' : ''}`}>
+              <span className="muted">#{wordPos + 1}</span>
+              <b>{quizPicked[i] !== undefined ? quizChoices[quizPicked[i]] : '—'}</b>
+            </div>
+          ))}
+        </div>
+
+        {/* shuffled word chips; tap to place into the next slot, tap again to undo */}
+        <div className="quiz-words">
+          {quizChoices.map((word, ci) => {
+            const picked = quizPicked.includes(ci)
+            return (
+              <button key={ci} className={`word-chip ${picked ? 'picked' : ''}`}
+                onClick={() => {
+                  setError('')
+                  setQuizPicked(picked
+                    ? quizPicked.filter(p => p !== ci) // undo (later picks shift up)
+                    : [...quizPicked, ci])
+                }}>
+                {word}
+              </button>
+            )
+          })}
+        </div>
+
         <div className="row">
           <button className="btn-ghost" onClick={() => { setError(''); setMode('create') }}>
             Back to seed
           </button>
-          <button className="btn-primary" disabled={quizAnswers.some(a => !a.trim())} onClick={check}>
+          <button className="btn-primary" disabled={quizPicked.length !== quizIdx.length} onClick={check}>
             Confirm
           </button>
         </div>
