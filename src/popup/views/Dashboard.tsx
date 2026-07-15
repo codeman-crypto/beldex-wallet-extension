@@ -149,7 +149,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       setTxs(list)
       setError('')
     } catch (e: any) {
-      setError(`LWS error: ${e.message}`)
+      setError(`Wallet server unreachable (${e.message}) — retrying…`)
     } finally {
       setRefreshing(false)
       setLoadedOnce(true)
@@ -171,11 +171,18 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
         const c = { address: s.secrets.address, view_key: s.secrets.secViewKey }
         if (cancelled) return
         setCreds(c)
-        await lws.login(c)
-        await refresh(c)
+        try {
+          await lws.login(c)
+          await refresh(c)
+        } catch (e: any) {
+          // server down/unreachable — keep polling below so we recover
+          // automatically once it responds again
+          setError(`Wallet server unreachable (${e.message}) — retrying…`)
+          setLoadedOnce(true)
+        }
         timer = setInterval(() => refresh(c), POLL_MS)
       } catch (e: any) {
-        setError(`LWS error: ${e.message} — check LWS_URL in src/lib/config.ts`)
+        setError(`LWS error: ${e.message}`)
       }
     })()
     return () => { cancelled = true; if (timer) clearInterval(timer) }
