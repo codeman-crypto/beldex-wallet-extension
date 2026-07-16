@@ -84,9 +84,5 @@ export async function newIntegratedAddress(
   const address: string = bridge.new__int_addr_from_addr_and_short_pid(primaryAddress, pid, CONFIG.NETTYPE)
   return { address, paymentId: pid }
 }
-
-export async function estimatedTxFee(feePerB: string, priority: number, forkVersion: number): Promise<string> {
-  const bridge = await getBridge()
-  const r = bridge.estimated_tx_network_fee(null, priority, feePerB) // verify arg order against MyMoneroCoreBridgeEssentialsClass
-  return typeof r === 'object' ? r.retVal : r
-}
+// Fee estimation is handled inside async__send_funds (it computes the exact fee
+// during construction), so no standalone estimated_tx_network_fee wrapper.

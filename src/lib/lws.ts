@@ -45,31 +45,8 @@ export function getAddressTxs(c: Credentials) {
   return post<any>('/get_address_txs', c)
 }
 
-/**
- * Unspent outputs for spending. NOTE: `total_sent` from the server is a hint —
- * true spent-detection requires computing key images client-side
- * (bridge.generateKeyImage) and filtering, since only we hold the spend key.
- * See @bdxi/beldex-response-parser-utils / beldex-keyimage-cache for reference.
- */
-export function getUnspentOuts(c: Credentials, extra: Record<string, unknown> = {}) {
-  return post<any>('/get_unspent_outs', {
-    ...c,
-    amount: '0',
-    mixin: 10,
-    use_dust: true,
-    dust_threshold: '2000000000',
-    ...extra
-  })
-}
+// The send flow (lib/send.ts) hits /get_unspent_outs, /get_random_outs and
+// /submit_raw_tx directly via rawPost(), because the WASM builds those request
+// bodies itself — so there are intentionally no typed wrappers for them here.
 
-/** Decoy outputs for ring signatures. */
-export function getRandomOuts(amounts: string[], count: number) {
-  return post<any>('/get_random_outs', { amounts, count })
-}
-
-/** Broadcast a signed transaction. */
-export function submitRawTx(c: Credentials, txHex: string) {
-  return post<any>('/submit_raw_tx', { ...c, tx: txHex })
-}
-
-// BNS name resolution lives in lib/bns.ts (daemon `bns_lookup` RPC).
+// BNS name resolution lives in lib/bns.ts (explorer bnslookup API).
