@@ -11,6 +11,7 @@
 // understated balance. (Same approach as MyMonero's response parser.)
 
 import { generateKeyImage } from './bridge'
+import { parseAtomic } from './money'
 import type { WalletSecrets } from './messages'
 
 export interface SpentCandidate {
@@ -34,12 +35,12 @@ async function ourKeyImage(s: WalletSecrets, txPub: string, outIndex: number): P
 }
 
 /** Sum of candidate amounts that are NOT really ours (false positives to subtract from total_sent). */
-export async function falseSpendSum(s: WalletSecrets, candidates: SpentCandidate[] | undefined): Promise<number> {
-  let fake = 0
+export async function falseSpendSum(s: WalletSecrets, candidates: SpentCandidate[] | undefined): Promise<bigint> {
+  let fake = 0n
   for (const c of candidates ?? []) {
     try {
       const ki = await ourKeyImage(s, c.tx_pub_key, Number(c.out_index))
-      if (ki !== c.key_image) fake += Number(c.amount)
+      if (ki !== c.key_image) fake += parseAtomic(c.amount)
     } catch {
       // can't verify this candidate — leave it counted as spent (conservative for balance)
     }
@@ -47,13 +48,14 @@ export async function falseSpendSum(s: WalletSecrets, candidates: SpentCandidate
   return fake
 }
 
-/** Corrects total_sent on an object bearing { total_sent, spent_outputs }. Returns the corrected number. */
+/** Corrects total_sent on an object bearing { total_sent, spent_outputs }. Returns corrected atomic units. */
 export async function correctedTotalSent(
   s: WalletSecrets,
   obj: { total_sent?: string | number; spent_outputs?: SpentCandidate[] }
-): Promise<number> {
-  const claimed = Number(obj.total_sent ?? 0)
-  if (!obj.spent_outputs?.length || claimed === 0) return claimed
+): Promise<bigint> {
+  const claimed = parseAtomic(obj.total_sent)
+  if (!obj.spent_outputs?.length || claimed === 0n) return claimed
   const fake = await falseSpendSum(s, obj.spent_outputs)
-  return Math.max(0, claimed - fake)
+  const corrected = claimed - fake
+  return corrected > 0n ? corrected : 0n
 }

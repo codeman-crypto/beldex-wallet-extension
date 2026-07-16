@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { sendToBackground, WalletMeta, WalletSecrets } from '../../lib/messages'
 import { Onboarding } from './Onboarding'
 import { correctedTotalSent } from '../../lib/spent'
+import { ATOMIC, fmtBDX, parseAtomic, toAtomic, absBig, toBdxFloat } from '../../lib/money'
 import * as lws from '../../lib/lws'
 import { sendFunds, SEND_STEPS } from '../../lib/send'
 import { Settings } from './Settings'
@@ -13,7 +14,6 @@ import { looksLikeBnsName, resolveBnsWallet } from '../../lib/bns'
 import { decodeAddress } from '../../lib/bridge'
 import { closePanel } from '../../lib/platform'
 
-const ATOMIC = 1e9 // 1 BDX = 1e9 atomic units
 const POLL_MS = 10_000 // Beldex block time ~30s; poll LWS every 10s while popup is open
 
 interface Tx {
@@ -59,9 +59,6 @@ async function reconcilePendingLocal(address: string, serverHashes: Set<string>)
   return still
 }
 
-function fmtBDX(atomic: number): string {
-  return (atomic / ATOMIC).toFixed(4)
-}
 
 function timeAgo(ts?: string): string {
   if (!ts) return ''
@@ -133,7 +130,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       setInfo(i)
       const serverList: Tx[] = (t.transactions ?? [])
         // drop pure decoy-usage entries: nothing received, nothing really sent
-        .filter((tx: Tx) => Number(tx.total_received ?? 0) > 0 || Number(tx.total_sent ?? 0) > 0)
+        .filter((tx: Tx) => parseAtomic(tx.total_received) > 0n || parseAtomic(tx.total_sent) > 0n)
 
       // Just-sent txs the LWS hasn't indexed yet: show them as pending right away.
       const localPending = await reconcilePendingLocal(address, new Set(serverList.map(tx => tx.hash)))
@@ -263,12 +260,11 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
     const input = to.trim()
     const amt = amount.trim()
 
-    // --- amount validation ---
+    // --- amount validation (BigInt: no float precision loss on large amounts) ---
     if (!/^\d*\.?\d+$/.test(amt)) { setError('Enter a valid amount'); return }
-    const amtNum = parseFloat(amt)
-    if (!Number.isFinite(amtNum) || amtNum <= 0) { setError('Amount must be greater than 0'); return }
     if ((amt.split('.')[1]?.length ?? 0) > 9) { setError('BDX supports at most 9 decimal places'); return }
-    const amtAtomic = Math.round(amtNum * ATOMIC)
+    const amtAtomic = toAtomic(amt)
+    if (amtAtomic <= 0n) { setError('Amount must be greater than 0'); return }
     if (unlocked !== null && amtAtomic > unlocked) {
       setError(`Amount exceeds your unlocked balance (${fmtBDX(unlocked)} BDX)`); return
     }
@@ -316,7 +312,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       // even before the LWS scanner picks it up
       await addPendingLocal(address, {
         hash: r.tx_hash,
-        sentAtomic: r.total_sent ?? String(Math.round(parseFloat(amount) * ATOMIC)),
+        sentAtomic: r.total_sent ?? String(toAtomic(amount.trim())),
         timestamp: new Date().toISOString()
       })
       setTxResult(r.tx_hash)
@@ -338,10 +334,11 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
   }
   const mask = (v: string) => (hideBalance ? '••••••' : v)
 
-  // total_sent is already key-image-corrected in refresh(), so this is the real balance
-  const balance = info ? Number(info.total_received ?? 0) - Number(info.total_sent ?? 0) : null
-  const locked = info ? Number(info.locked_funds ?? 0) : 0
-  const unlocked = balance !== null ? Math.max(0, balance - locked) : null
+  // total_sent is already key-image-corrected in refresh(), so this is the real balance.
+  // BigInt throughout so balances above 2^53 atomic (~9M BDX) stay exact.
+  const balance: bigint | null = info ? parseAtomic(info.total_received) - parseAtomic(info.total_sent) : null
+  const locked = info ? parseAtomic(info.locked_funds) : 0n
+  const unlocked: bigint | null = balance !== null ? (balance - locked > 0n ? balance - locked : 0n) : null
   // The LWS refreshes `blockchain_height` on a slower cadence than its scanner,
   // so scanned_block_height can briefly exceed it. Treat the max as the true tip.
   const scanned = info ? Number(info.scanned_block_height ?? 0) : 0
@@ -407,7 +404,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
         </div>
         {price !== null ? (
           <div className="fiat">
-            {balance !== null && <>≈ <b>{mask((balance / ATOMIC * price).toFixed(2))} USDT</b> · </>}
+            {balance !== null && <>≈ <b>{mask((toBdxFloat(balance) * price).toFixed(2))} USDT</b> · </>}
             1 BDX = {price.toFixed(4)} USDT
           </div>
         ) : !loadedOnce ? (
@@ -460,15 +457,15 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
             ))}
             {loadedOnce && (() => {
               const filtered = txs.filter(tx => {
-                const incoming = Number(tx.total_received ?? 0) - Number(tx.total_sent ?? 0) >= 0
+                const incoming = parseAtomic(tx.total_received) - parseAtomic(tx.total_sent) >= 0n
                 return txFilter === 'all' || (txFilter === 'in' ? incoming : !incoming)
               })
               if (filtered.length === 0) {
                 return <p className="muted center">{txs.length === 0 ? 'No transactions yet' : 'Nothing here'}</p>
               }
               return filtered.map(tx => {
-                const delta = Number(tx.total_received ?? 0) - Number(tx.total_sent ?? 0)
-                const incoming = delta >= 0
+                const delta = parseAtomic(tx.total_received) - parseAtomic(tx.total_sent)
+                const incoming = delta >= 0n
                 return (
                   <div className="tx" key={tx.hash}>
                     <div className={`icon ${incoming ? '' : 'out'}`}>{incoming ? '↓' : '↑'}</div>
@@ -479,7 +476,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
                       </div>
                     </div>
                     <div className={`amt ${incoming ? 'in' : 'out'}`}>
-                      {incoming ? '+' : '−'}{fmtBDX(Math.abs(delta))}
+                      {incoming ? '+' : '−'}{fmtBDX(absBig(delta))}
                     </div>
                     <button className="tx-info" title="Transaction details"
                       onClick={() => { setTxHashCopied(false); setSelectedTx(tx) }}>ⓘ</button>
@@ -650,14 +647,14 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       )}
 
       {selectedTx && (() => {
-        const delta = Number(selectedTx.total_received ?? 0) - Number(selectedTx.total_sent ?? 0)
-        const incoming = delta >= 0
+        const delta = parseAtomic(selectedTx.total_received) - parseAtomic(selectedTx.total_sent)
+        const incoming = delta >= 0n
         const confirmations = selectedTx.mempool || !selectedTx.height
           ? 0
           : Math.max(0, chainHeight - Number(selectedTx.height) + 1)
         const rows: Array<[string, React.ReactNode]> = [
           ['Type', <span className={incoming ? 'ok' : 'error'}>{incoming ? '↓ Received' : '↑ Sent'}</span>],
-          ['Amount', `${incoming ? '+' : '−'}${fmtBDX(Math.abs(delta))} BDX`],
+          ['Amount', `${incoming ? '+' : '−'}${fmtBDX(absBig(delta))} BDX`],
           ['Status', selectedTx.mempool
             ? <span className="pending">⏳ Pending (mempool)</span>
             : <span className="ok">✓ Confirmed</span>],
