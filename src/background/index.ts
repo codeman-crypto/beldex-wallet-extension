@@ -92,17 +92,24 @@ async function endSession(): Promise<void> {
 
 // ---- brute-force backoff --------------------------------------------------------
 //
-// In-memory only: the Map resets whenever the service worker restarts (~30s
-// idle). That's acceptable — this is friction against rapid scripted guessing
-// through the message channel; the real defense is the PBKDF2-600k KDF.
+// Persisted in storage.session so it survives the service worker idling out
+// (~30s) — otherwise an attacker could reset the counter just by waiting for the
+// SW to unload. Still cleared on browser exit (session storage), which is fine.
+// The real defense remains the PBKDF2-600k KDF; this is friction against rapid
+// scripted guessing through the message channel.
 
-const failedAttempts = new Map<string, { fails: number; nextAllowedAt: number }>()
+interface BackoffEntry { fails: number; nextAllowedAt: number }
+const BACKOFF_KEY = 'backoff_state'
 const BACKOFF_THRESHOLD = 5
 const BACKOFF_CAP_MS = 60_000
 
+async function getBackoff(): Promise<Record<string, BackoffEntry>> {
+  return ((await sessionStore.get(BACKOFF_KEY))[BACKOFF_KEY] as Record<string, BackoffEntry>) ?? {}
+}
+
 /** Returns an error message if this wallet is still in backoff, else null. */
-function backoffCheck(walletId: string): string | null {
-  const e = failedAttempts.get(walletId)
+async function backoffCheck(walletId: string): Promise<string | null> {
+  const e = (await getBackoff())[walletId]
   if (e && Date.now() < e.nextAllowedAt) {
     const secs = Math.ceil((e.nextAllowedAt - Date.now()) / 1000)
     return `Too many attempts — try again in ${secs}s`
@@ -110,19 +117,25 @@ function backoffCheck(walletId: string): string | null {
   return null
 }
 
-function backoffRecordFailure(walletId: string): void {
-  const e = failedAttempts.get(walletId) ?? { fails: 0, nextAllowedAt: 0 }
+async function backoffRecordFailure(walletId: string): Promise<void> {
+  const state = await getBackoff()
+  const e = state[walletId] ?? { fails: 0, nextAllowedAt: 0 }
   e.fails++
   if (e.fails >= BACKOFF_THRESHOLD) {
     // 5th failure -> 2s, then 4s, 8s, ... capped at 60s
     const delay = Math.min(2 ** (e.fails - BACKOFF_THRESHOLD + 1) * 1000, BACKOFF_CAP_MS)
     e.nextAllowedAt = Date.now() + delay
   }
-  failedAttempts.set(walletId, e)
+  state[walletId] = e
+  await sessionStore.set({ [BACKOFF_KEY]: state })
 }
 
-function backoffReset(walletId: string): void {
-  failedAttempts.delete(walletId)
+async function backoffReset(walletId: string): Promise<void> {
+  const state = await getBackoff()
+  if (walletId in state) {
+    delete state[walletId]
+    await sessionStore.set({ [BACKOFF_KEY]: state })
+  }
 }
 
 // ---- auto-lock ----------------------------------------------------------------
@@ -217,7 +230,7 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       const wallets = await getWallets()
       const activeId = await getActiveId()
       if (!activeId) return { ok: false, error: 'No wallet stored' }
-      const wait = backoffCheck(activeId)
+      const wait = await backoffCheck(activeId)
       if (wait) return { ok: false, error: wait }
       try {
         const secrets: WalletSecrets = JSON.parse(await decryptVault(wallets[activeId].vault, req.password))
@@ -225,11 +238,11 @@ async function handle(req: BgRequest): Promise<BgResponse> {
           wallets[activeId].address = secrets.address // backfill migrated wallet
           await setWallets(wallets)
         }
-        backoffReset(activeId)
+        await backoffReset(activeId)
         await startSession(activeId, secrets)
         return stateResponse()
       } catch {
-        backoffRecordFailure(activeId)
+        await backoffRecordFailure(activeId)
         return { ok: false, error: 'Incorrect password' }
       }
     }
@@ -250,14 +263,14 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       const wallets = await getWallets()
       const activeId = await getActiveId()
       if (!activeId) return { ok: false, error: 'No wallet stored' }
-      const wait = backoffCheck(activeId)
+      const wait = await backoffCheck(activeId)
       if (wait) return { ok: false, error: wait }
       try {
         const secrets: WalletSecrets = JSON.parse(await decryptVault(wallets[activeId].vault, req.password))
-        backoffReset(activeId)
+        await backoffReset(activeId)
         return { ok: true, secrets }
       } catch {
-        backoffRecordFailure(activeId)
+        await backoffRecordFailure(activeId)
         return { ok: false, error: 'Incorrect password' }
       }
     }
@@ -268,16 +281,16 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       if (!activeId) return { ok: false, error: 'No wallet stored' }
       // Same throttle as UNLOCK/REVEAL — without it this path is a free
       // password-guessing oracle that bypasses the backoff entirely.
-      const wait = backoffCheck(activeId)
+      const wait = await backoffCheck(activeId)
       if (wait) return { ok: false, error: wait }
       let plaintext: string
       try {
         plaintext = await decryptVault(wallets[activeId].vault, req.oldPassword)
       } catch {
-        backoffRecordFailure(activeId)
+        await backoffRecordFailure(activeId)
         return { ok: false, error: 'Current password is incorrect' }
       }
-      backoffReset(activeId)
+      await backoffReset(activeId)
       wallets[activeId].vault = await encryptVault(plaintext, req.newPassword)
       await setWallets(wallets)
       return { ok: true }
