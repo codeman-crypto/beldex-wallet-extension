@@ -215,6 +215,11 @@ async function handle(req: BgRequest): Promise<BgResponse> {
 
     case 'SAVE_WALLET': {
       const wallets = await getWallets()
+      // Reject a restore/create of an address already present, so re-importing the
+      // same seed doesn't create duplicate entries (App.tsx keys wallets by address).
+      if (Object.values(wallets).some(w => w.address && w.address === req.secrets.address)) {
+        return { ok: false, error: 'This wallet is already imported' }
+      }
       const vault = await encryptVault(JSON.stringify(req.secrets), req.password)
       const id = crypto.randomUUID()
       const name = req.name?.trim() || `Wallet ${Object.keys(wallets).length + 1}`
