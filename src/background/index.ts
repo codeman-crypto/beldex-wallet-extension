@@ -344,12 +344,22 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       // deletes the ACTIVE wallet only; other wallets stay intact
       const wallets = await getWallets()
       const activeId = await getActiveId()
-      if (activeId) {
-        delete wallets[activeId]
-        await setWallets(wallets)
-        const remaining = Object.keys(wallets)
-        await chrome.storage.local.set({ [ACTIVE_KEY]: remaining[0] ?? '' })
+      if (!activeId) return { ok: false, error: 'No wallet stored' }
+      // Require the password so a walk-up attacker with an unlocked panel can't
+      // delete the wallet from a UI-only confirmation. Throttled like UNLOCK.
+      const wait = await backoffCheck(activeId)
+      if (wait) return { ok: false, error: wait }
+      try {
+        await decryptVault(wallets[activeId].vault, req.password)
+      } catch {
+        await backoffRecordFailure(activeId)
+        return { ok: false, error: 'Incorrect password' }
       }
+      await backoffReset(activeId)
+      delete wallets[activeId]
+      await setWallets(wallets)
+      const remaining = Object.keys(wallets)
+      await chrome.storage.local.set({ [ACTIVE_KEY]: remaining[0] ?? '' })
       await endSession()
       return stateResponse()
     }

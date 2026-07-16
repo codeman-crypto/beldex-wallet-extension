@@ -116,9 +116,12 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
     else setError(r.error)
   }
 
+  const [deletePw, setDeletePw] = useState('')
   const doDelete = async () => {
-    await sendToBackground({ type: 'WIPE' })
-    onWiped()
+    setError('')
+    const r = await sendToBackground({ type: 'WIPE', password: deletePw })
+    if (r.ok) onWiped()
+    else setError(r.error)
   }
 
   const copyValue = async (v: string) => {
@@ -276,10 +279,14 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
                 ⚠ Once deleted, this wallet can be restored only using your seed.
                 If you haven't written down your 25-word recovery seed, do it before deleting.
               </p>
+              <input type="password" autoFocus placeholder="Enter password to confirm"
+                value={deletePw} onChange={e => setDeletePw(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && deletePw && doDelete()} />
               <div className="row">
-                <button className="btn-ghost" onClick={() => setShowDeleteModal(false)}>Cancel</button>
-                <button className="btn-danger" onClick={doDelete}>Delete</button>
+                <button className="btn-ghost" onClick={() => { setShowDeleteModal(false); setDeletePw(''); setError('') }}>Cancel</button>
+                <button className="btn-danger" disabled={!deletePw} onClick={doDelete}>Delete</button>
               </div>
+              {error && <p className="error" style={{ marginBottom: 0 }}>{error}</p>}
             </div>
           </div>
         )}
