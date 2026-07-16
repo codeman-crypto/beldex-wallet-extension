@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { sendToBackground, WalletSecrets } from '../../lib/messages'
 import { truncateUnlessTab } from '../../lib/format'
-import { copySecret } from '../../lib/clipboard'
+import { copySecret, clearSecretNow } from '../../lib/clipboard'
 
 const REVEAL_SECONDS = 30 // revealed secrets auto-hide after this long
 
@@ -89,8 +89,13 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
     setPassword(''); setRevealed(null); setError(''); setOkMsg('')
     setNewPw(''); setConfirmPw(''); setCopied(false); setShowDeleteModal(false)
     setValueVisible(false)
+    clearSecretNow() // don't leave a copied secret on the clipboard when leaving a screen
   }
   const go = (i: Item) => { reset(); setItem(i) }
+
+  // Clear any copied secret when Settings unmounts (panel closed, locked, etc.),
+  // since the 60s timed clear can't run once the panel is gone.
+  useEffect(() => () => clearSecretNow(), [])
 
   const reveal = async () => {
     setBusy(true); setError('')
@@ -169,7 +174,7 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
               </button>
             </div>
             <p className="muted center" style={{ marginTop: 6, fontSize: 10 }}>
-              Clipboard clears automatically in 60s
+              Clipboard clears after 60s, or when you leave this screen
             </p>
           </>
         )}
