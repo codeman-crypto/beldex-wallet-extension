@@ -5,8 +5,19 @@
 //   GET https://explorer.beldex.io/api/bnslookup?name=<name>
 //   -> { status: "ok", bnsData: { available, name, wallet, bchat, belnet, ethAddress } }
 // `available: true` means the name is unregistered; a registered name carries
-// its wallet address in `bnsData.wallet`. Privacy note: the queried name is
-// visible to the explorer — standard for light wallets.
+// its wallet address in `bnsData.wallet`.
+//
+// THREAT MODEL:
+// - Privacy: the queried name is visible to the explorer (standard for light
+//   wallets that don't run a full node).
+// - Integrity: we fully trust the explorer to return the correct address for a
+//   name. A compromised or malicious endpoint could return an attacker's
+//   address. This is NOT independently verified client-side (doing so would
+//   require fetching the on-chain encrypted record and decrypting it with the
+//   name-derived key). The mitigation is UX: the send review modal shows the
+//   full resolved address before the user confirms, so a substitution is
+//   visible to anyone who checks the address. Self-hosting BNS_LOOKUP_URL
+//   removes the third-party trust.
 
 import { CONFIG } from './config'
 
