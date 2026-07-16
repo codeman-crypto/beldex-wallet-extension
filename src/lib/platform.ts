@@ -12,8 +12,12 @@ const anyChrome = chrome as any
  * Call once from the background script.
  */
 export function wireToolbarOpensPanel(): void {
-  if (chrome.sidePanel?.setPanelBehavior) {
-    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => { /* older Chrome */ })
+  // Access via bracket notation so a static analyzer (web-ext lint) doesn't flag
+  // the Chrome-only sidePanel.setPanelBehavior member on the Firefox build — it's
+  // already guarded at runtime and never invoked there.
+  const sidePanel = anyChrome['sidePanel']
+  if (sidePanel?.['setPanelBehavior']) {
+    sidePanel['setPanelBehavior']({ openPanelOnActionClick: true }).catch(() => { /* older Chrome */ })
   } else if (anyChrome.sidebarAction && chrome.action?.onClicked) {
     chrome.action.onClicked.addListener(() => {
       anyChrome.sidebarAction.toggle() // Firefox: user-gesture-initiated
