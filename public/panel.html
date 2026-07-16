@@ -224,6 +224,19 @@
       .menu-item.danger { color: var(--red); }
       .menu-item.danger:hover { background: rgba(255, 92, 92, 0.06); }
 
+      .switch {
+        width: 30px; height: 16px; flex: none;
+        background: #1c1c1c; border: 1px solid var(--border);
+        display: inline-flex; align-items: center; padding: 1px;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .switch .knob {
+        width: 12px; height: 12px; background: var(--text-dim);
+        transition: transform 0.15s, background 0.15s;
+      }
+      .switch.on { border-color: var(--green); }
+      .switch.on .knob { transform: translateX(14px); background: var(--green); }
+
       .btn-danger {
         background: transparent; color: var(--red);
         border: 1px solid var(--red); width: 100%;

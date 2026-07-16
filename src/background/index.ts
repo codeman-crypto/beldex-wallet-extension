@@ -172,11 +172,15 @@ async function syncOnce(): Promise<void> {
     const nowReceived = Number(info.total_received ?? 0)
     const nowSent = Number(info.total_sent ?? 0)
     if (!Number.isNaN(prevReceived) && nowReceived > prevReceived && nowSent <= prevSent) {
+      // Privacy toggle: hide the amount from the on-screen notification if set.
+      const hideAmount = (await chrome.storage.local.get('notif_hide_amount'))['notif_hide_amount'] === true
       chrome.notifications.create({
         type: 'basic',
         iconUrl: 'icons/icon128.png',
         title: 'Beldex Wallet',
-        message: `Received ${((nowReceived - prevReceived) / ATOMIC).toFixed(4)} BDX`
+        message: hideAmount
+          ? 'You received BDX'
+          : `Received ${((nowReceived - prevReceived) / ATOMIC).toFixed(4)} BDX`
       })
     }
   } catch {

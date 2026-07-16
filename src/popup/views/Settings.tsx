@@ -65,11 +65,21 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
 
   // auto-lock duration
   const [autoLock, setAutoLock] = useState<number | null>(null)
+  // hide amount in incoming-funds notifications (default off)
+  const [hideNotifAmount, setHideNotifAmount] = useState(false)
   useEffect(() => {
     sendToBackground({ type: 'GET_AUTOLOCK' }).then(r => {
       if (r.ok && r.minutes) setAutoLock(r.minutes)
     })
+    chrome.storage.local.get('notif_hide_amount').then(o => setHideNotifAmount(o['notif_hide_amount'] === true))
   }, [])
+
+  const toggleNotifAmount = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const next = !hideNotifAmount
+    setHideNotifAmount(next)
+    await chrome.storage.local.set({ notif_hide_amount: next })
+  }
 
   // auto-hide countdown for revealed secrets
   const [secondsLeft, setSecondsLeft] = useState(REVEAL_SECONDS)
@@ -316,6 +326,10 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
       <div className="menu-item" onClick={() => go('autolock')}>
         <span>Auto-Lock {autoLock ? `(${autoLock >= 60 ? `${autoLock / 60}h` : `${autoLock}m`})` : ''}</span>
         <span className="chev">›</span>
+      </div>
+      <div className="menu-item" onClick={toggleNotifAmount}>
+        <span>Hide amount in notifications</span>
+        <span className={`switch ${hideNotifAmount ? 'on' : ''}`}><span className="knob" /></span>
       </div>
       <div className="menu-item danger" onClick={() => go('delete')}>
         <span>Delete Wallet</span><span className="chev">›</span>
