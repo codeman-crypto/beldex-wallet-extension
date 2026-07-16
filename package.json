@@ -9,7 +9,8 @@
     "build:chrome": "webpack --mode=production",
     "build:firefox": "webpack --mode=production --env firefox",
     "dev": "webpack --mode=development --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --disallow-code-generation-from-strings --test test/*.test.mjs"
   },
   "dependencies": {
     "@bdxi/beldex-app-bridge": "^3.0.0",
