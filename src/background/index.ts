@@ -277,6 +277,12 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       return { ok: true }
     }
 
+    case 'TOUCH': {
+      // Panel user activity: keep the session alive while the wallet is in use.
+      if (await getSession()) await touchAutoLock()
+      return { ok: true }
+    }
+
     case 'GET_AUTOLOCK':
       return { ok: true, minutes: await autoLockMinutes() }
 

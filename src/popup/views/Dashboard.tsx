@@ -190,6 +190,38 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
     return () => { cancelled = true; if (timer) clearInterval(timer) }
   }, [])
 
+  // Lock the UI the moment the background session ends (auto-lock alarm, Lock
+  // in another view, wallet switch). Without this, an open panel keeps the
+  // secrets in memory and keeps polling the LWS after the wallet has "locked".
+  useEffect(() => {
+    const onStorage = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area === 'session' && 'session_secrets' in changes && changes['session_secrets'].newValue === undefined) {
+        secretsRef.current = null
+        onLocked() // unmounts us; the mount effect's cleanup stops the poll timer
+      }
+    }
+    chrome.storage.onChanged.addListener(onStorage)
+    return () => chrome.storage.onChanged.removeListener(onStorage)
+  }, [])
+
+  // User activity re-arms the auto-lock timer (throttled to one ping per 30s),
+  // so the wallet doesn't lock out from under someone actively using the panel.
+  useEffect(() => {
+    let lastPing = 0
+    const ping = () => {
+      const now = Date.now()
+      if (now - lastPing < 30_000) return
+      lastPing = now
+      sendToBackground({ type: 'TOUCH' })
+    }
+    window.addEventListener('pointerdown', ping)
+    window.addEventListener('keydown', ping)
+    return () => {
+      window.removeEventListener('pointerdown', ping)
+      window.removeEventListener('keydown', ping)
+    }
+  }, [])
+
   const copyAddress = async () => {
     await navigator.clipboard.writeText(address)
     setCopied(true)
