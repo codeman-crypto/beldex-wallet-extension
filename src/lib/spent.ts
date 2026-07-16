@@ -21,11 +21,13 @@ export interface SpentCandidate {
   out_index: number
 }
 
-// key images are deterministic per (txPub, outIndex, keys) — cache for the panel's lifetime
+// Key images are deterministic per (address, txPub, outIndex) — cache for the
+// panel's lifetime. Keyed by wallet address too, so switching wallets can't
+// collide on the same (txPub, outIndex) tuple.
 const kiCache = new Map<string, string>()
 
 async function ourKeyImage(s: WalletSecrets, txPub: string, outIndex: number): Promise<string> {
-  const k = `${txPub}:${outIndex}`
+  const k = `${s.address}:${txPub}:${outIndex}`
   let ki = kiCache.get(k)
   if (!ki) {
     ki = await generateKeyImage(txPub, s.secViewKey, s.pubSpendKey, s.secSpendKey, outIndex)
