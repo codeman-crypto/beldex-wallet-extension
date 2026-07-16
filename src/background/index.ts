@@ -266,12 +266,18 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       const wallets = await getWallets()
       const activeId = await getActiveId()
       if (!activeId) return { ok: false, error: 'No wallet stored' }
+      // Same throttle as UNLOCK/REVEAL — without it this path is a free
+      // password-guessing oracle that bypasses the backoff entirely.
+      const wait = backoffCheck(activeId)
+      if (wait) return { ok: false, error: wait }
       let plaintext: string
       try {
         plaintext = await decryptVault(wallets[activeId].vault, req.oldPassword)
       } catch {
+        backoffRecordFailure(activeId)
         return { ok: false, error: 'Current password is incorrect' }
       }
+      backoffReset(activeId)
       wallets[activeId].vault = await encryptVault(plaintext, req.newPassword)
       await setWallets(wallets)
       return { ok: true }
