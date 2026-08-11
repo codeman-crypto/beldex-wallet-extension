@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react'
 import { sendToBackground, WalletSecrets } from '../../lib/messages'
 import { truncateUnlessTab } from '../../lib/format'
 import { copySecret, clearSecretNow } from '../../lib/clipboard'
+import { useConnectedSites, UnlinkIcon } from './ConnectedSitesBadge'
 
 const REVEAL_SECONDS = 30 // revealed secrets auto-hide after this long
 
-type Item = 'menu' | 'seed' | 'viewKey' | 'spendKey' | 'password' | 'autolock' | 'rename' | 'delete'
+type Item = 'menu' | 'seed' | 'viewKey' | 'spendKey' | 'password' | 'autolock' | 'rename' | 'delete' | 'sites'
 
 const AUTOLOCK_OPTIONS = [5, 15, 30, 60] // minutes
 
@@ -266,6 +267,11 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
     )
   }
 
+  // ---- connected sites (dapp bridge grants for the active wallet) ----
+  if (item === 'sites') {
+    return <ConnectedSites walletName={walletName} onBack={() => go('menu')} />
+  }
+
   // ---- delete wallet ----
   if (item === 'delete') {
     return (
@@ -331,12 +337,45 @@ export function Settings({ walletName, onBack, onWiped, onChanged }:
         <span>Hide amount in notifications</span>
         <span className={`switch ${hideNotifAmount ? 'on' : ''}`}><span className="knob" /></span>
       </div>
+      <div className="menu-item" onClick={() => go('sites')}>
+        <span>Connected Sites</span><span className="chev">›</span>
+      </div>
       <div className="menu-item danger" onClick={() => go('delete')}>
         <span>Delete Wallet</span><span className="chev">›</span>
       </div>
       <div style={{ padding: '10px 16px 4px' }}>
         <button className="btn-ghost" style={{ width: '100%' }} onClick={onBack}>Back</button>
       </div>
+    </div>
+  )
+}
+
+// Sites this wallet is connected to via the dapp bridge (bdx-web3js). Grants
+// are per (origin, wallet); disconnecting fires a `disconnect` event to the site.
+function ConnectedSites({ walletName, onBack }: { walletName: string; onBack: () => void }) {
+  const { origins, disconnect } = useConnectedSites()
+
+  return (
+    <div className="card">
+      <h2>Connected Sites</h2>
+      <p className="muted">
+        Sites allowed to see <b>{walletName || 'this wallet'}</b>'s address and balance.
+        Transactions always require separate approval.
+      </p>
+      {origins.length === 0 && <p className="muted">No connected sites.</p>}
+      {origins.map(o => (
+        <div key={o.origin} title={o.origin} style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0',
+          borderBottom: '1px solid #191919'
+        }}>
+          <span style={{ color: 'var(--green)', fontSize: 9 }}>●</span>
+          <span style={{ flex: 1, wordBreak: 'break-all', fontSize: 11 }}>{o.origin}</span>
+          <button className="btn-icon" title="Disconnect this site" onClick={() => disconnect(o.origin)}>
+            <UnlinkIcon />
+          </button>
+        </div>
+      ))}
+      <button className="btn-ghost" style={{ width: '100%', marginTop: 12 }} onClick={onBack}>Back</button>
     </div>
   )
 }
