@@ -14,7 +14,12 @@ module.exports = (env = {}) => {
   return {
   entry: {
     panel: './src/popup/index.tsx',
-    background: './src/background/index.ts'
+    background: './src/background/index.ts',
+    // Dapp bridge (bdx-web3js protocol): approval window UI, content-script
+    // relay, and the main-world provider injected into pages.
+    approval: './src/approval/index.tsx',
+    content: './src/content/index.ts',
+    inpage: './src/inpage/index.ts'
   },
   output: {
     path: path.resolve(__dirname, outDir),
@@ -46,6 +51,7 @@ module.exports = (env = {}) => {
       patterns: [
         { from: manifestSrc, to: 'manifest.json' },
         { from: 'public/panel.html', to: 'panel.html' },
+        { from: 'public/approval.html', to: 'approval.html' },
         { from: 'public/icons', to: 'icons' },
         // Fonts bundled locally — MV3 forbids loading remote fonts.
         { from: 'node_modules/@fontsource/michroma/files/michroma-latin-400-normal.woff2', to: 'fonts/michroma-400.woff2' },
