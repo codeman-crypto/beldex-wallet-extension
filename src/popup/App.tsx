@@ -3,6 +3,10 @@ import { sendToBackground, WalletMeta, WalletState } from '../lib/messages'
 import { Onboarding } from './views/Onboarding'
 import { Unlock } from './views/Unlock'
 import { Dashboard } from './views/Dashboard'
+import { ConnectApprovalCard } from './views/ConnectApprovalCard'
+import { SendApprovalCard, SendReqParams } from './views/SendApprovalCard'
+
+interface PendingReq { reqId: string; origin: string; method: string; params?: object }
 
 export function App() {
   const [state, setState] = useState<WalletState | 'loading'>('loading')
@@ -10,6 +14,15 @@ export function App() {
   const [walletName, setWalletName] = useState<string>('')
   const [wallets, setWallets] = useState<WalletMeta[]>([])
   const [error, setError] = useState<string>('')
+  // Dapp approval request waiting on the user (shown in-panel, MetaMask-style).
+  const [pendingReq, setPendingReq] = useState<PendingReq | null>(null)
+
+  const refreshPending = async () => {
+    try {
+      const r = await sendToBackground({ type: 'DAPP_LIST_PENDING' })
+      if (r.ok) setPendingReq(r.pendingReq ?? null)
+    } catch { /* background unreachable — GET_STATE path surfaces it */ }
+  }
 
   const refresh = async () => {
     try {
@@ -29,7 +42,16 @@ export function App() {
     }
   }
 
-  useEffect(() => { refresh() }, [])
+  useEffect(() => {
+    refresh()
+    refreshPending()
+    // Background pings this when a dapp request arrives / resolves.
+    const onMsg = (m: unknown) => {
+      if ((m as { type?: string })?.type === 'DAPP_PENDING_CHANGED') refreshPending()
+    }
+    chrome.runtime.onMessage.addListener(onMsg)
+    return () => chrome.runtime.onMessage.removeListener(onMsg)
+  }, [])
 
   if (state === 'loading') {
     return (
@@ -48,6 +70,31 @@ export function App() {
   }
   if (state === 'uninitialized') return <Onboarding onDone={refresh} />
   if (state === 'locked') return <Unlock walletName={walletName} wallets={wallets} onChanged={refresh} />
+  // A dapp request takes over the unlocked panel until decided.
+  if (pendingReq) {
+    const done = () => { setPendingReq(null); refreshPending() }
+    return (
+      <Screen>
+        {pendingReq.method === 'bdx_sendTransaction' ? (
+          <SendApprovalCard
+            reqId={pendingReq.reqId}
+            origin={pendingReq.origin}
+            params={pendingReq.params as unknown as SendReqParams}
+            walletName={walletName}
+            onDone={done}
+          />
+        ) : (
+          <ConnectApprovalCard
+            reqId={pendingReq.reqId}
+            origin={pendingReq.origin}
+            walletName={walletName}
+            address={address}
+            onDone={done}
+          />
+        )}
+      </Screen>
+    )
+  }
   // key= forces a clean remount when switching between wallets
   return <Dashboard key={address} address={address} walletName={walletName} wallets={wallets} onLocked={refresh} />
 }
