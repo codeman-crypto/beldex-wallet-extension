@@ -16,9 +16,18 @@ import * as lws from '../lib/lws'
 import type { BgRequest, BgResponse, WalletMeta, WalletSecrets, WalletState } from '../lib/messages'
 import { wireToolbarOpensPanel } from '../lib/platform'
 import { sessionStore } from '../lib/sessionStore'
+import {
+  initDappBridge, dappGetPending, dappFirstPending, dappApprove, dappReject,
+  dappComplete, dappFail, dappSendLockAcquire, dappSendLockRelease,
+  dappListOrigins, dappRevokeOrigin, dappActiveTabSite, dappNotifyLocked, dappNotifyUnlocked,
+  dappNotifyWalletSwitched, dappNotifyBalanceFromInfo, dappCleanupWallet
+} from './dapp'
 
 // Open the panel when the toolbar icon is clicked (Chrome side panel / Firefox sidebar).
 wireToolbarOpensPanel()
+
+// Dapp bridge: ports from content scripts + approval-window plumbing.
+initDappBridge()
 
 const LEGACY_VAULT_KEY = 'beldex_vault'
 const WALLETS_KEY = 'wallets'
@@ -82,12 +91,15 @@ async function startSession(walletId: string, secrets: WalletSecrets): Promise<v
   await sessionStore.set({ [SESSION_KEY]: { walletId, secrets } })
   await touchAutoLock()
   chrome.alarms.create(ALARM_SYNC, { periodInMinutes: 0.5, delayInMinutes: 0 })
+  dappNotifyUnlocked(secrets.address).catch(() => {})
 }
 
 async function endSession(): Promise<void> {
+  const hadSession = !!(await getSession())
   await sessionStore.remove([SESSION_KEY, CACHE_KEY])
   await chrome.alarms.clear(ALARM_SYNC)
   await chrome.alarms.clear(ALARM_LOCK)
+  if (hadSession) dappNotifyLocked().catch(() => {})
 }
 
 // ---- brute-force backoff --------------------------------------------------------
@@ -162,6 +174,16 @@ async function syncOnce(): Promise<void> {
     const info = await lws.getAddressInfo({ address: s.address, view_key: s.secViewKey })
     const prevCache = (await sessionStore.get(CACHE_KEY))[CACHE_KEY]
     await sessionStore.set({ [CACHE_KEY]: { info, at: Date.now(), address: s.address } })
+
+    // Dapp bridge: push balanceChanged to connected+granted origins on any delta.
+    if (
+      prevCache?.address === s.address &&
+      (String(prevCache?.info?.total_received) !== String(info.total_received) ||
+        String(prevCache?.info?.total_sent) !== String(info.total_sent) ||
+        String(prevCache?.info?.locked_funds) !== String(info.locked_funds))
+    ) {
+      dappNotifyBalanceFromInfo(info).catch(() => {})
+    }
 
     // Notify on new incoming funds. Heuristic: total_received also grows from
     // change returned by our own outgoing txs, so skip when total_sent grew too.
@@ -329,6 +351,7 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       if (req.id !== activeId) {
         await endSession() // switching requires the target wallet's password
         await chrome.storage.local.set({ [ACTIVE_KEY]: req.id })
+        dappNotifyWalletSwitched().catch(() => {}) // grants never carry over
       }
       return stateResponse()
     }
@@ -365,8 +388,54 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       const remaining = Object.keys(wallets)
       await chrome.storage.local.set({ [ACTIVE_KEY]: remaining[0] ?? '' })
       await endSession()
+      await dappCleanupWallet(activeId) // drop this wallet's site grants
       return stateResponse()
     }
+
+    // ---- dapp bridge (approval UI + Connected Sites) ----
+
+    case 'DAPP_GET_PENDING': {
+      const r = await dappGetPending(req.reqId)
+      return r.ok ? { ok: true, pending: r.pending } : { ok: false, error: r.error }
+    }
+
+    case 'DAPP_LIST_PENDING':
+      return { ok: true, pendingReq: await dappFirstPending() }
+
+    case 'DAPP_APPROVE': {
+      const r = await dappApprove(req.reqId)
+      return r.ok ? { ok: true } : { ok: false, error: r.error }
+    }
+
+    case 'DAPP_REJECT':
+      return dappReject(req.reqId)
+
+    case 'DAPP_COMPLETE': {
+      const r = await dappComplete(req.reqId, req.result)
+      // Refresh the cache promptly so balanceChanged reaches connected dapps.
+      syncOnce().catch(() => {})
+      return r.ok ? { ok: true } : { ok: false, error: r.error }
+    }
+
+    case 'DAPP_FAIL':
+      return dappFail(req.reqId)
+
+    case 'SEND_LOCK_ACQUIRE': {
+      const r = await dappSendLockAcquire()
+      return r.ok ? { ok: true } : { ok: false, error: r.error }
+    }
+
+    case 'SEND_LOCK_RELEASE':
+      return dappSendLockRelease()
+
+    case 'DAPP_LIST_ORIGINS':
+      return { ok: true, origins: await dappListOrigins() }
+
+    case 'DAPP_ACTIVE_SITE':
+      return { ok: true, activeSite: await dappActiveTabSite() }
+
+    case 'DAPP_REVOKE_ORIGIN':
+      return dappRevokeOrigin(req.origin)
   }
 }
 

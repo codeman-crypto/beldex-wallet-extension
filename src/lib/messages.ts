@@ -31,6 +31,18 @@ export type BgRequest =
   | { type: 'SWITCH_WALLET'; id: string }
   | { type: 'RENAME_WALLET'; name: string } // renames the active wallet
   | { type: 'WIPE'; password: string } // deletes the ACTIVE wallet only (password-gated)
+  // ---- dapp bridge (approval UI + Connected Sites settings) ----
+  | { type: 'DAPP_GET_PENDING'; reqId: string }
+  | { type: 'DAPP_LIST_PENDING' } // oldest live approval request, for the panel
+  | { type: 'DAPP_APPROVE'; reqId: string }
+  | { type: 'DAPP_REJECT'; reqId: string }
+  | { type: 'DAPP_COMPLETE'; reqId: string; result: { txHash: string; fee: string } }
+  | { type: 'DAPP_FAIL'; reqId: string }
+  | { type: 'SEND_LOCK_ACQUIRE' } // global one-send-at-a-time (panel + dapp)
+  | { type: 'SEND_LOCK_RELEASE' }
+  | { type: 'DAPP_LIST_ORIGINS' }
+  | { type: 'DAPP_ACTIVE_SITE' } // site in the user's active tab + connection status
+  | { type: 'DAPP_REVOKE_ORIGIN'; origin: string }
 
 export type WalletState = 'uninitialized' | 'locked' | 'unlocked'
 
@@ -43,6 +55,11 @@ export type BgResponse =
       minutes?: number
       walletName?: string
       wallets?: WalletMeta[]
+      // dapp bridge
+      pending?: { origin: string; method: string; params?: object }
+      pendingReq?: { reqId: string; origin: string; method: string; params?: object } | null
+      origins?: Array<{ origin: string; grantedAt: number }>
+      activeSite?: { origin: string; connected: boolean } | null
     }
   | { ok: false; error: string }
 
