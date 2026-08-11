@@ -13,6 +13,8 @@ import { sendToBackground } from '../../lib/messages'
 import { sendFunds, SEND_STEPS } from '../../lib/send'
 import { ATOMIC, DECIMALS } from '../../lib/money'
 import { addPendingLocal } from '../../lib/pendingTxs'
+import { getBridge } from '../../lib/bridge'
+import { rawPost } from '../../lib/lws'
 
 export interface SendReqParams {
   to: string
@@ -51,6 +53,36 @@ export function SendApprovalCard({ reqId, origin, params, walletName, onDone }: 
   const [fee, setFee] = useState('')
 
   const amountAtomic = params.amount ? BigInt(params.amount) : null
+  // Real pre-approval fee estimate via the WASM's estimated_tx_network_fee
+  // (fed with the LWS's current per-byte fee). Null while loading / on failure
+  // — the static heuristic text is the fallback.
+  const [feeEstimate, setFeeEstimate] = useState<bigint | null>(null)
+
+  useEffect(() => {
+    if (phase !== 'review') return
+    let stop = false
+    ;(async () => {
+      try {
+        const s = await sendToBackground({ type: 'GET_SECRETS' })
+        if (!s.ok || !s.secrets) return
+        // Current network fee rates ride along on /get_unspent_outs
+        // (wallet_light_rpc.h GET_UNSPENT_OUTS: per_byte_fee / per_kb_fee).
+        const resp: any = await rawPost('/get_unspent_outs', {
+          address: s.secrets.address, view_key: s.secrets.secViewKey,
+          amount: '0', mixin: 9, use_dust: false, dust_threshold: '2000000000'
+        })
+        const bridge = await getBridge()
+        const perB = resp?.per_byte_fee != null ? String(resp.per_byte_fee) : null
+        const perKb = resp?.per_kb_fee != null ? String(resp.per_kb_fee) : null
+        if (!perB && !perKb) return
+        const fee: string = bridge.estimated_tx_network_fee(
+          perKb, params.priority, perB, resp?.fee_per_o != null ? String(resp.fee_per_o) : perB, null
+        )
+        if (!stop && /^\d+$/.test(String(fee))) setFeeEstimate(BigInt(fee))
+      } catch { /* keep the heuristic text */ }
+    })()
+    return () => { stop = true }
+  }, [phase])
 
   // Keepalive: the signing flow + user reading time must outlive the MV3
   // service worker's ~30s idle timeout, or the dapp's reply channel dies.
@@ -171,8 +203,11 @@ export function SendApprovalCard({ reqId, origin, params, walletName, onDone }: 
         </div>
         <h4>Network fee</h4>
         <div style={box}>
-          Estimated ≈ 0.02–0.05 BDX{params.priority === 5 ? ' (flash pays more)' : ''} — exact fee
-          is computed during signing and shown after broadcast.
+          {feeEstimate !== null
+            ? <>Estimated ≈ <b>{exactBDX(feeEstimate)} BDX</b> — exact fee is computed during
+                signing and shown after broadcast.</>
+            : <>Estimated ≈ 0.02–0.05 BDX{params.priority === 5 ? ' (flash pays more)' : ''} — exact
+                fee is computed during signing and shown after broadcast.</>}
         </div>
       </div>
       <p className="warn center">
