@@ -7,12 +7,14 @@ import * as lws from '../../lib/lws'
 import { sendFunds, SEND_STEPS } from '../../lib/send'
 import { Settings } from './Settings'
 import { Receive } from './Receive'
+import { SiteConnectionBar } from './ConnectedSitesBadge'
 import { truncateMiddle, truncateUnlessTab } from '../../lib/format'
 import { getBdxPriceUsdt } from '../../lib/price'
 import { getPidLabels } from '../../lib/pidLabels'
 import { looksLikeBnsName, resolveBnsWallet } from '../../lib/bns'
 import { decodeAddress } from '../../lib/bridge'
 import { closePanel } from '../../lib/platform'
+import { sessionStore } from '../../lib/sessionStore'
 
 const POLL_MS = 10_000 // Beldex block time ~30s; poll LWS every 10s while popup is open
 
@@ -31,33 +33,9 @@ interface Tx {
 
 type TxFilter = 'all' | 'in' | 'out'
 
-// ---- locally-tracked outgoing txs (bridge the gap until the LWS indexes them) ----
-
-interface PendingLocalTx { hash: string; sentAtomic: string; timestamp: string }
-const PENDING_TTL_MS = 24 * 3600 * 1000 // give up tracking after a day
-
-// keyed per wallet address so multiple wallets don't see each other's pendings
-const pendingKey = (address: string) => `pending_txs_${address}`
-
-async function getPendingLocal(address: string): Promise<PendingLocalTx[]> {
-  return (await chrome.storage.local.get(pendingKey(address)))[pendingKey(address)] ?? []
-}
-
-async function addPendingLocal(address: string, tx: PendingLocalTx): Promise<void> {
-  const list = await getPendingLocal(address)
-  if (!list.some(p => p.hash === tx.hash)) {
-    await chrome.storage.local.set({ [pendingKey(address)]: [tx, ...list] })
-  }
-}
-
-/** Drop entries the server now knows about (or stale ones); return those still unknown. */
-async function reconcilePendingLocal(address: string, serverHashes: Set<string>): Promise<PendingLocalTx[]> {
-  const list = await getPendingLocal(address)
-  const still = list.filter(p =>
-    !serverHashes.has(p.hash) && Date.now() - new Date(p.timestamp).getTime() < PENDING_TTL_MS)
-  if (still.length !== list.length) await chrome.storage.local.set({ [pendingKey(address)]: still })
-  return still
-}
+// Locally-tracked outgoing txs moved to ../../lib/pendingTxs so dapp-initiated
+// sends (SendApprovalCard) can record pendings into the same history.
+import { addPendingLocal, reconcilePendingLocal, pendingKey } from '../../lib/pendingTxs'
 
 
 function timeAgo(ts?: string): string {
@@ -125,6 +103,21 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
         for (const tx of t.transactions ?? []) {
           tx.total_sent = String(await correctedTotalSent(s, tx))
         }
+        // Publish the key-image-corrected figures for the dapp bridge: the
+        // background can't run the WASM, so without this a dapp's getBalance
+        // would use the LWS's raw total_sent — which counts every decoy-ring
+        // appearance and collapses the balance toward zero once the wallet
+        // has outgoing activity. Key: keep in sync with background/dapp.ts.
+        sessionStore.set({
+          corrected_balance: {
+            address,
+            total_received: String(i.total_received ?? '0'),
+            total_sent: String(i.total_sent),
+            locked_funds: String(i.locked_funds ?? '0'),
+            scanned_block_height: Number(i.scanned_block_height ?? 0),
+            at: Date.now()
+          }
+        }).catch(() => {})
       }
 
       setInfo(i)
@@ -186,6 +179,16 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
     })()
     return () => { cancelled = true; if (timer) clearInterval(timer) }
   }, [])
+
+  // A dapp-initiated send (SendApprovalCard, possibly in the fallback popup)
+  // just recorded a pending tx — refresh so it appears in history immediately.
+  useEffect(() => {
+    const onPending = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area === 'local' && pendingKey(address) in changes && creds) refresh(creds)
+    }
+    chrome.storage.onChanged.addListener(onPending)
+    return () => chrome.storage.onChanged.removeListener(onPending)
+  }, [creds, address])
 
   // Lock the UI the moment the background session ends (auto-lock alarm, Lock
   // in another view, wallet switch). Without this, an open panel keeps the
@@ -297,6 +300,13 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
   const doSend = async (target: string) => {
     setError(''); setTxResult(''); setSending(true)
     setSendPhase('sending'); setSendStepCode(0); setSendError(''); setHashCopied(false)
+    // Global single-flight send lock, shared with dapp-initiated sends — two
+    // concurrent constructions could select the same outputs (double spend).
+    const lock = await sendToBackground({ type: 'SEND_LOCK_ACQUIRE' })
+    if (!lock.ok) {
+      setSendError(lock.error); setSendPhase('error'); setSending(false)
+      return
+    }
     try {
       const s = await sendToBackground({ type: 'GET_SECRETS' })
       if (!s.ok || !s.secrets) { onLocked(); return }
@@ -324,6 +334,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       setSendPhase('error')
     } finally {
       setSending(false)
+      await sendToBackground({ type: 'SEND_LOCK_RELEASE' }).catch(() => {})
     }
   }
 
@@ -485,6 +496,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
               })
             })()}
           </div>
+          <SiteConnectionBar walletName={walletName} />
         </>
       )}
 
