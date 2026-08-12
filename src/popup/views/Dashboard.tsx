@@ -99,6 +99,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
       // transactions appear whenever strangers sample our outputs as decoys.
       const s = secretsRef.current
       if (s) {
+        const rawTotalSent = String(i.total_sent ?? '0') // snapshot BEFORE correction
         i.total_sent = String(await correctedTotalSent(s, i))
         for (const tx of t.transactions ?? []) {
           tx.total_sent = String(await correctedTotalSent(s, tx))
@@ -107,12 +108,15 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
         // background can't run the WASM, so without this a dapp's getBalance
         // would use the LWS's raw total_sent — which counts every decoy-ring
         // appearance and collapses the balance toward zero once the wallet
-        // has outgoing activity. Key: keep in sync with background/dapp.ts.
+        // has outgoing activity. total_sent_raw lets the background compute
+        // the decoy overcount and stay accurate as raw figures move between
+        // corrections. Keep the shape in sync with background/dapp.ts.
         sessionStore.set({
           corrected_balance: {
             address,
             total_received: String(i.total_received ?? '0'),
             total_sent: String(i.total_sent),
+            total_sent_raw: rawTotalSent,
             locked_funds: String(i.locked_funds ?? '0'),
             scanned_block_height: Number(i.scanned_block_height ?? 0),
             at: Date.now()

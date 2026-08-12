@@ -153,7 +153,11 @@ export async function dappNotifyWalletSwitched(): Promise<void> {
 export async function dappNotifyBalanceFromInfo(info: Record<string, unknown>): Promise<void> {
   const activeId = await getActiveId()
   if (!activeId) return
-  const b = naiveBalance(info)
+  const session = await getSession()
+  if (!session || session.walletId !== activeId) return
+  // Same corrected-overlay figures bdx_getBalance serves — never push the
+  // raw naive numbers to pages if a correction exists.
+  const b = await balanceForDapp(info, session.secrets.address)
   await broadcast('balanceChanged', b, activeId)
 }
 
@@ -172,13 +176,14 @@ export async function dappCleanupWallet(walletId: string): Promise<void> {
 
 // ---- balance ---------------------------------------------------------------
 
+const num = (v: unknown) => { try { return BigInt(String(v ?? 0)) } catch { return 0n } }
+
 function naiveBalance(info: Record<string, unknown>): {
   total: string; unlocked: string; approximate: boolean; height: number
 } {
   // NAIVE: the LWS's total_sent over-counts (any ring membership). The panel
   // corrects it with client-side key images (WASM — window contexts only), the
   // background cannot; hence approximate:true on the wire (PROTOCOL.md §4.4).
-  const num = (v: unknown) => { try { return BigInt(String(v ?? 0)) } catch { return 0n } }
   const received = num(info.total_received)
   const sent = num(info.total_sent)
   const locked = num(info.locked_funds)
@@ -186,6 +191,38 @@ function naiveBalance(info: Record<string, unknown>): {
   const unlocked = total > locked ? total - locked : 0n
   const height = Number(info.scanned_block_height ?? info.scanned_height ?? 0) || 0
   return { total: total.toString(), unlocked: unlocked.toString(), approximate: true, height }
+}
+
+/**
+ * Best balance the background can serve: raw LWS figures adjusted by the
+ * key-image correction a WASM context (panel / send-approval card) published.
+ *
+ * The published entry snapshots BOTH the corrected total_sent and the raw
+ * total_sent it was derived from. Their difference is the decoy OVERCOUNT —
+ * which only ever grows (outputs get sampled as ring decoys; they never
+ * un-sample) and is unaffected by our own real spends. So even when the raw
+ * figures have moved since the correction (e.g. the user just sent from a
+ * dapp), `current_raw_sent − overcount` remains an accurate estimate, and the
+ * balance no longer collapses to zero right after a send. `approximate` is
+ * false only when the raw figures exactly match the correction snapshot.
+ */
+async function balanceForDapp(raw: Record<string, unknown>, address: string): Promise<{
+  total: string; unlocked: string; approximate: boolean; height: number
+}> {
+  const corr = (await sessionStore.get(CORRECTED_KEY))[CORRECTED_KEY]
+  if (!corr || corr.address !== address) return naiveBalance(raw)
+  const rawSent = num(raw.total_sent)
+  const rawRecv = num(raw.total_received)
+  const snapSent = num(corr.total_sent_raw ?? corr.total_sent)
+  const corrSent = num(corr.total_sent)
+  const overcount = snapSent > corrSent ? snapSent - corrSent : 0n
+  const adjSent = rawSent > overcount ? rawSent - overcount : 0n
+  const locked = num(raw.locked_funds)
+  const total = rawRecv > adjSent ? rawRecv - adjSent : 0n
+  const unlocked = total > locked ? total - locked : 0n
+  const height = Number(raw.scanned_block_height ?? raw.scanned_height ?? 0) || 0
+  const exact = rawSent === snapSent && rawRecv === num(corr.total_received)
+  return { total: total.toString(), unlocked: unlocked.toString(), approximate: !exact, height }
 }
 
 async function readBalance(): Promise<Record<string, unknown>> {
@@ -449,21 +486,7 @@ async function handleMethod(
       if (req.method === 'bdx_getAddress') return reply({ address: session.secrets.address })
       try {
         const raw = await readBalance()
-        // Prefer the panel's key-image-corrected total_sent when available:
-        // the raw LWS figure counts decoy-ring appearances too. Corrected
-        // key images never un-spend, so an older correction is still valid
-        // as long as no new activity (total_received unchanged) — otherwise
-        // accept it only if fresh, and flag approximate accordingly.
-        const corr = (await sessionStore.get(CORRECTED_KEY))[CORRECTED_KEY]
-        const rawReceived = String(raw.total_received ?? '0')
-        if (
-          corr && corr.address === session.secrets.address &&
-          (rawReceived === String(corr.total_received) || Date.now() - (corr.at ?? 0) < 90_000)
-        ) {
-          const b = naiveBalance({ ...raw, total_sent: corr.total_sent })
-          return reply({ ...b, approximate: rawReceived !== String(corr.total_received) })
-        }
-        return reply(naiveBalance(raw))
+        return reply(await balanceForDapp(raw, session.secrets.address))
       } catch (e) {
         const known = e as { code?: number; message?: string }
         if (typeof known?.code === 'number') return fail(err(known.code, known.message ?? 'error'))

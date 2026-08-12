@@ -14,13 +14,35 @@ import { sendFunds, SEND_STEPS } from '../../lib/send'
 import { ATOMIC, DECIMALS } from '../../lib/money'
 import { addPendingLocal } from '../../lib/pendingTxs'
 import { getBridge } from '../../lib/bridge'
-import { rawPost } from '../../lib/lws'
+import { rawPost, getAddressInfo } from '../../lib/lws'
+import { correctedTotalSent } from '../../lib/spent'
+import { sessionStore } from '../../lib/sessionStore'
+import type { WalletSecrets } from '../../lib/messages'
 
 export interface SendReqParams {
   to: string
   amount?: string // atomic units
   priority: 1 | 2 | 3 | 4 | 5
   sweep: boolean
+}
+
+/** Recompute + publish key-image-corrected balance figures for the dapp
+ *  bridge (shape kept in sync with Dashboard.tsx / background/dapp.ts). */
+async function publishCorrectedBalance(secrets: WalletSecrets): Promise<void> {
+  const info: any = await getAddressInfo({ address: secrets.address, view_key: secrets.secViewKey })
+  const rawTotalSent = String(info.total_sent ?? '0')
+  const corrected = await correctedTotalSent(secrets, info)
+  await sessionStore.set({
+    corrected_balance: {
+      address: secrets.address,
+      total_received: String(info.total_received ?? '0'),
+      total_sent: corrected.toString(),
+      total_sent_raw: rawTotalSent,
+      locked_funds: String(info.locked_funds ?? '0'),
+      scanned_block_height: Number(info.scanned_block_height ?? 0),
+      at: Date.now()
+    }
+  })
 }
 
 /** Exact display: all significant decimals, trailing zeros trimmed. */
@@ -125,6 +147,11 @@ export function SendApprovalCard({ reqId, origin, params, walletName, onDone }: 
         sentAtomic: String(r.total_sent ?? params.amount ?? '0'),
         timestamp: new Date().toISOString()
       }).catch(() => {})
+      // Publish a fresh key-image correction (this IS a WASM context) so the
+      // background's balance overlay stays accurate after our spend — without
+      // it, the raw LWS figures would collapse the dapp-visible balance to
+      // zero until the panel's next correction pass.
+      await publishCorrectedBalance(s.secrets).catch(() => {})
       await sendToBackground({
         type: 'DAPP_COMPLETE', reqId, result: { txHash: r.tx_hash, fee: String(paidFee) }
       })
