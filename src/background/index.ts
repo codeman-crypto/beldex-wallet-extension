@@ -88,7 +88,12 @@ async function getSession(): Promise<Session | null> {
 }
 
 async function startSession(walletId: string, secrets: WalletSecrets): Promise<void> {
-  await sessionStore.set({ [SESSION_KEY]: { walletId, secrets } })
+  // Least privilege (audit L4): the session never holds the mnemonic or raw
+  // seed — no runtime consumer needs them (sends/key-images use the sec keys;
+  // Settings' reveal flows re-decrypt the vault via REVEAL). Keeps the most
+  // catastrophic secrets out of every GET_SECRETS round-trip and JS context.
+  const sessionSecrets: WalletSecrets = { ...secrets, mnemonic: '', seed: '' }
+  await sessionStore.set({ [SESSION_KEY]: { walletId, secrets: sessionSecrets } })
   await touchAutoLock()
   chrome.alarms.create(ALARM_SYNC, { periodInMinutes: 0.5, delayInMinutes: 0 })
   dappNotifyUnlocked(secrets.address).catch(() => {})
