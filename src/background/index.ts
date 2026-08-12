@@ -441,10 +441,14 @@ async function handle(req: BgRequest): Promise<BgResponse> {
 
 chrome.runtime.onMessage.addListener((req: BgRequest, sender, sendResponse) => {
   // Defense in depth: only our own EXTENSION PAGES may talk to the keyring.
-  // sender.tab present = message from a content-script context (runs in web
-  // pages); those speak exclusively over the dapp Port and must never reach
-  // privileged handlers like GET_SECRETS / DAPP_APPROVE.
-  if (sender.id !== chrome.runtime.id || sender.tab) return
+  // Content scripts (which run inside web pages and must never reach
+  // privileged handlers like GET_SECRETS / DAPP_APPROVE) report the web
+  // page's http(s) URL; genuine extension pages report chrome-extension://
+  // (moz-extension:// on Firefox). NOTE: sender.tab is NOT a valid
+  // discriminator — our own panel.html?tab=1 and the approval popup also
+  // live in tabs. Dapp traffic stays exclusively on the validated Port.
+  if (sender.id !== chrome.runtime.id) return
+  if (!/^(chrome|moz)-extension:\/\//.test(sender.url ?? '')) return
   handle(req).then(sendResponse).catch((e: Error) => sendResponse({ ok: false, error: e.message }))
   return true // keep the channel open for the async response
 })
