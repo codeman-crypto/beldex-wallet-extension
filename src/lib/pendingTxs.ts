@@ -2,6 +2,13 @@
 // the LWS indexing the tx, so sends appear in history IMMEDIATELY (marked
 // pending). Written by both the panel's send flow and dapp-initiated sends
 // (SendApprovalCard); read/reconciled by the Dashboard history.
+//
+// Stored in storage.session (memory-backed), not storage.local (audit L3):
+// tx hashes + amounts are transaction metadata that shouldn't persist on disk
+// while the wallet is locked. Tradeoff: pendings don't survive a browser
+// restart — acceptable, the LWS indexes broadcast txs within moments.
+
+import { sessionStore } from './sessionStore'
 
 export interface PendingLocalTx { hash: string; sentAtomic: string; timestamp: string }
 
@@ -11,13 +18,13 @@ export const PENDING_TTL_MS = 24 * 3600 * 1000 // give up tracking after a day
 export const pendingKey = (address: string) => `pending_txs_${address}`
 
 export async function getPendingLocal(address: string): Promise<PendingLocalTx[]> {
-  return (await chrome.storage.local.get(pendingKey(address)))[pendingKey(address)] ?? []
+  return (await sessionStore.get(pendingKey(address)))[pendingKey(address)] ?? []
 }
 
 export async function addPendingLocal(address: string, tx: PendingLocalTx): Promise<void> {
   const list = await getPendingLocal(address)
   if (!list.some(p => p.hash === tx.hash)) {
-    await chrome.storage.local.set({ [pendingKey(address)]: [tx, ...list] })
+    await sessionStore.set({ [pendingKey(address)]: [tx, ...list] })
   }
 }
 
@@ -26,6 +33,6 @@ export async function reconcilePendingLocal(address: string, serverHashes: Set<s
   const list = await getPendingLocal(address)
   const still = list.filter(p =>
     !serverHashes.has(p.hash) && Date.now() - new Date(p.timestamp).getTime() < PENDING_TTL_MS)
-  if (still.length !== list.length) await chrome.storage.local.set({ [pendingKey(address)]: still })
+  if (still.length !== list.length) await sessionStore.set({ [pendingKey(address)]: still })
   return still
 }
