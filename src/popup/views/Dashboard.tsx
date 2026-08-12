@@ -188,7 +188,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
   // just recorded a pending tx — refresh so it appears in history immediately.
   useEffect(() => {
     const onPending = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
-      if (area === 'local' && pendingKey(address) in changes && creds) refresh(creds)
+      if (area === 'session' && pendingKey(address) in changes && creds) refresh(creds)
     }
     chrome.storage.onChanged.addListener(onPending)
     return () => chrome.storage.onChanged.removeListener(onPending)
@@ -510,9 +510,19 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
           <input placeholder="Recipient address or BNS name" value={to} onChange={e => setTo(e.target.value)} />
           {resolving && <p className="muted" style={{ marginTop: -6 }}>Resolving name…</p>}
           {resolved && (
-            <p className="ok" style={{ marginTop: -6 }}>
-              ✓ {resolved.name} → {truncateMiddle(resolved.address, 10)}
-            </p>
+            <div style={{ marginTop: -6, marginBottom: 8 }}>
+              <p className="ok" style={{ margin: '0 0 4px' }}>✓ {resolved.name} resolves to:</p>
+              {/* full address so it can be verified out-of-band (audit M4) */}
+              <div className="ok" style={{
+                fontFamily: 'var(--mono)', fontSize: 10, overflowWrap: 'anywhere',
+                background: '#0d0d0d', border: '1px solid var(--border)', padding: '6px 8px'
+              }}>
+                {resolved.address}
+              </div>
+              <p className="muted" style={{ margin: '4px 0 0', fontSize: 10 }}>
+                Verify this address with the recipient — BNS lookups trust explorer.beldex.io.
+              </p>
+            </div>
           )}
           {resolveErr && <p className="warn" style={{ marginTop: -6 }}>{resolveErr}</p>}
           <input placeholder="Amount (BDX)" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} />
