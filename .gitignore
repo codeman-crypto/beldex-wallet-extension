@@ -1,6 +1,7 @@
 node_modules/
 dist/
 firefox/
+release/
 *.log
 .DS_Store
 SECURITY_AUDIT.md
