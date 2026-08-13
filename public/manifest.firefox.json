@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Beldex Wallet",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "A light wallet for Beldex (BDX). Non-custodial: spend keys never leave your browser. Connects to Beldex dapps (bdx-web3js) with per-site approval.",
   "browser_specific_settings": {
     "gecko": {
       "id": "beldex-wallet@beldex.io",
       "data_collection_permissions": {
-        "required": ["none"]
-      }
+        "required": [
+          "none"
+        ]
+      },
+      "strict_min_version": "115.0"
     }
   },
   "icons": {
@@ -26,22 +29,38 @@
     "default_icon": "icons/icon48.png"
   },
   "background": {
-    "scripts": ["background.js"]
+    "scripts": [
+      "background.js"
+    ]
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["inpage.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "inpage.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start"
     }
   ],
-  "permissions": ["storage", "alarms", "notifications"],
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications"
+  ],
   "host_permissions": [
     "https://lwsapi.beldex.io/*",
     "https://explorer.beldex.io/*",
