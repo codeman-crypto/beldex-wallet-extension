@@ -15,6 +15,7 @@ import { looksLikeBnsName, resolveBnsWallet } from '../../lib/bns'
 import { decodeAddress } from '../../lib/bridge'
 import { closePanel } from '../../lib/platform'
 import { sessionStore } from '../../lib/sessionStore'
+import { CONFIG } from '../../lib/config'
 
 const POLL_MS = 10_000 // Beldex block time ~30s; poll LWS every 10s while popup is open
 
@@ -363,7 +364,12 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
   return (
     <div className="wrap">
       <div className="header">
-        <div className="brand"><img src="icons/logo.svg" alt="" />Beldex</div>
+        <div className="brand">
+          <img src="icons/logo.svg" alt="" />Beldex
+          {/* Non-mainnet builds are visually unmistakable — mixing up a testnet
+              and mainnet wallet is an easy and expensive mistake to make. */}
+          {CONFIG.NETWORK !== 'mainnet' && <span className="net-badge">{CONFIG.NETWORK_LABEL}</span>}
+        </div>
         <div style={{ display: 'flex', gap: 6 }}>
           <button className="btn-icon" title="Switch wallet" onClick={() => setShowWallets(true)}>
             {walletName || 'Wallet'} ▾
@@ -715,7 +721,7 @@ export function Dashboard({ address, walletName, wallets, onLocked }:
               <div className="row" style={{ marginTop: 14 }}>
                 <button className="btn-ghost" onClick={() => setSelectedTx(null)}>Close</button>
                 <a className="btn-primary center" style={{ textDecoration: 'none', padding: '12px 18px' }}
-                  href={`https://explorer.beldex.io/tx/${selectedTx.hash}`} target="_blank" rel="noreferrer">
+                  href={`${CONFIG.EXPLORER_TX_URL}${selectedTx.hash}`} target="_blank" rel="noreferrer">
                   Explorer ↗
                 </a>
               </div>

@@ -2,6 +2,9 @@ node_modules/
 dist/
 firefox/
 release/
+dist-testnet/
+firefox-testnet/
+.env
 *.log
 .DS_Store
 SECURITY_AUDIT.md

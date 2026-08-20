@@ -1,0 +1,239 @@
+// Wallet-standard message signing, in JS.
+//
+// The WASM core (@bdxi/beldex-app-bridge v3.0.0) contains generate_signature but
+// does not embind-export it, so the only way to offer bdx_signMessage without an
+// upstream core release is to do the group arithmetic here. That is done with
+// @noble/curves + @noble/hashes — audited implementations — rather than by
+// hand-rolling field or hash primitives.
+//
+// The construction is exactly wallet2::sign() / crypto::generate_signature():
+//
+//   h    = keccak256(message)                      (cn_fast_hash)
+//   k    = random scalar
+//   comm = k·G
+//   c    = keccak256(h ‖ A ‖ comm) mod ℓ           (hash_to_scalar)
+//   r    = k − c·a  mod ℓ                          (sc_mulsub)
+//   out  = "SigV1" + monero_base58(c ‖ r)
+//
+// Verified by `crypto::check_signature(h, A, sig)`, which is what the CLI's
+// `verify_value <address> <signature> <value>` and the explorer both run.
+//
+// NOTE: SigV1, not SigV2. Beldex's wallet2 uses the SigV1 magic and hashes the
+// message directly; a SigV2-style scheme would not verify in beldex-wallet-cli.
+
+import { ed25519 } from '@noble/curves/ed25519'
+import { keccak_256 } from '@noble/hashes/sha3'
+
+const L = ed25519.CURVE.n // group order ℓ
+const SIG_MAGIC = 'SigV1'
+
+// -------------------------------------------------------------- conversions
+
+function bytesToNumberLE(b: Uint8Array): bigint {
+  let n = 0n
+  for (let i = b.length - 1; i >= 0; i--) n = (n << 8n) | BigInt(b[i]!)
+  return n
+}
+
+function numberToBytesLE(n: bigint, len = 32): Uint8Array {
+  const out = new Uint8Array(len)
+  for (let i = 0; i < len; i++) {
+    out[i] = Number(n & 0xffn)
+    n >>= 8n
+  }
+  return out
+}
+
+export function hexToBytes(hex: string): Uint8Array {
+  const s = hex.trim()
+  if (s.length % 2 !== 0 || /[^0-9a-fA-F]/.test(s)) throw new Error('invalid hex')
+  const out = new Uint8Array(s.length / 2)
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16)
+  return out
+}
+
+export function bytesToHex(b: Uint8Array): string {
+  let s = ''
+  for (const x of b) s += x.toString(16).padStart(2, '0')
+  return s
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0)
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const p of parts) { out.set(p, off); off += p.length }
+  return out
+}
+
+// ------------------------------------------------------------------ base58
+// Monero's block-based base58 (8-byte blocks -> 11 chars), NOT the Bitcoin one.
+
+const B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+const ENCODED_BLOCK_SIZES = [0, 2, 3, 5, 6, 7, 9, 10, 11]
+
+export function base58Encode(data: Uint8Array): string {
+  let out = ''
+  for (let i = 0; i < data.length; i += 8) {
+    const block = data.subarray(i, i + 8)
+    const size = ENCODED_BLOCK_SIZES[block.length]!
+    let value = 0n
+    for (const byte of block) value = (value << 8n) | BigInt(byte) // big-endian
+    const chars = new Array<string>(size).fill('1')
+    for (let pos = size - 1; value > 0n; pos--) {
+      chars[pos] = B58_ALPHABET[Number(value % 58n)]!
+      value /= 58n
+    }
+    out += chars.join('')
+  }
+  return out
+}
+
+export function base58Decode(text: string): Uint8Array {
+  if (!text) return new Uint8Array()
+  const out: number[] = []
+  for (let i = 0; i < text.length; i += 11) {
+    const chunk = text.slice(i, i + 11)
+    const size = chunk.length === 11 ? 8 : ENCODED_BLOCK_SIZES.indexOf(chunk.length)
+    if (size <= 0) throw new Error('invalid base58 length')
+    let value = 0n
+    for (const ch of chunk) {
+      const digit = B58_ALPHABET.indexOf(ch)
+      if (digit < 0) throw new Error('invalid base58 character')
+      value = value * 58n + BigInt(digit)
+    }
+    if (value >= 1n << BigInt(8 * size)) throw new Error('base58 block overflow')
+    const block = new Uint8Array(size)
+    for (let j = size - 1; j >= 0; j--) { block[j] = Number(value & 0xffn); value >>= 8n }
+    out.push(...block)
+  }
+  return new Uint8Array(out)
+}
+
+// ------------------------------------------------------------------ scalars
+
+function hashToScalar(data: Uint8Array): bigint {
+  return bytesToNumberLE(keccak_256(data)) % L
+}
+
+/** Uniform random scalar in [1, ℓ). 64 random bytes reduced mod ℓ — the bias
+ *  from a 512-bit reduction is negligible (< 2^-250). */
+function randomScalar(): bigint {
+  const wide = new Uint8Array(64)
+  crypto.getRandomValues(wide)
+  const k = bytesToNumberLE(wide) % L
+  return k === 0n ? randomScalar() : k
+}
+
+// ---------------------------------------------------------------- signing
+
+export interface SignedMessage {
+  /** "SigV1…" — what the CLI's verify_value expects. */
+  signature: string
+  /** The key the signature verifies against (account spend public key). */
+  pubkey: string
+}
+
+/**
+ * Sign `message` with a Monero-convention Schnorr signature.
+ *
+ * @param message     UTF-8 message (the explorer's ownership challenge)
+ * @param secSpendKey account spend SECRET key, hex (from the unlocked session)
+ * @param pubSpendKey account spend PUBLIC key, hex — the asset `owner` value
+ */
+export function signMessage(message: string, secSpendKey: string, pubSpendKey: string): SignedMessage {
+  const a = bytesToNumberLE(hexToBytes(secSpendKey))
+  const A = hexToBytes(pubSpendKey)
+  if (A.length !== 32) throw new Error('bad spend public key')
+  if (a <= 0n || a >= L) throw new Error('bad spend secret key')
+
+  // The pair must actually belong together, or we would hand out a signature
+  // that can never verify (and leak nothing about why).
+  const derived = ed25519.ExtendedPoint.BASE.multiply(a).toRawBytes()
+  if (bytesToHex(derived) !== bytesToHex(A)) {
+    throw new Error('spend key pair mismatch')
+  }
+
+  const h = keccak_256(new TextEncoder().encode(message))
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const k = randomScalar()
+    const comm = ed25519.ExtendedPoint.BASE.multiply(k).toRawBytes()
+    const c = hashToScalar(concat(h, A, comm))
+    if (c === 0n) continue
+    const r = (((k - c * a) % L) + L) % L
+    if (r === 0n) continue
+
+    const sig = concat(numberToBytesLE(c), numberToBytesLE(r))
+    // Self-check before it leaves the wallet: cheap, and turns any future
+    // regression into a local error instead of a signature the chain's own
+    // tooling rejects.
+    if (!checkSignature(h, A, sig)) throw new Error('self-check failed')
+    return { signature: SIG_MAGIC + base58Encode(sig), pubkey: bytesToHex(A) }
+  }
+  throw new Error('could not produce a signature')
+}
+
+// ------------------------------------------------------------- verification
+
+/** crypto::check_signature(). prefixHash/pub 32 bytes, sig 64 bytes (c ‖ r). */
+export function checkSignature(prefixHash: Uint8Array, pub: Uint8Array, sig: Uint8Array): boolean {
+  if (prefixHash.length !== 32 || pub.length !== 32 || sig.length !== 64) return false
+  let A
+  try {
+    A = ed25519.ExtendedPoint.fromHex(pub)
+  } catch {
+    return false // not a curve point
+  }
+  const c = bytesToNumberLE(sig.subarray(0, 32))
+  const r = bytesToNumberLE(sig.subarray(32))
+  if (c >= L || r >= L || c === 0n) return false // sc_check + sc_isnonzero
+
+  // comm = c·A + r·G
+  const comm = A.multiplyUnsafe(c).add(ed25519.ExtendedPoint.BASE.multiplyUnsafe(r))
+  const commBytes = comm.toRawBytes()
+  // ge_tobytes() of the identity is 0x01 followed by zeros.
+  if (commBytes[0] === 1 && commBytes.every((b, i) => i === 0 || b === 0)) return false
+
+  return hashToScalar(concat(prefixHash, pub, commBytes)) === c
+}
+
+/** Verify a "SigV1…" signature over `message` against a spend public key. */
+export function verifyMessage(message: string, pubSpendKey: string, signature: string): boolean {
+  const sig = signature.trim()
+  if (!sig.startsWith(SIG_MAGIC)) return false
+  let raw: Uint8Array
+  let pub: Uint8Array
+  try {
+    raw = base58Decode(sig.slice(SIG_MAGIC.length))
+    pub = hexToBytes(pubSpendKey)
+  } catch {
+    return false
+  }
+  return checkSignature(keccak_256(new TextEncoder().encode(message)), pub, raw)
+}
+
+// --------------------------------------------------------------- addresses
+// Address -> spend public key, so bdx_verifyMessage can take an address like
+// the CLI's `verify_value` does. Done here rather than through the WASM's
+// decode_address because verification must work in the service worker, where
+// the Emscripten glue cannot load.
+
+export function addressSpendKey(address: string): string | null {
+  let raw: Uint8Array
+  try {
+    raw = base58Decode(address.trim())
+  } catch {
+    return null
+  }
+  if (raw.length < 69) return null
+  // [varint prefix][spend 32][view 32][payment id 8 if integrated][checksum 4]
+  let i = 0
+  for (; i < raw.length; i++) if ((raw[i]! & 0x80) === 0) { i++; break }
+  const body = raw.subarray(0, raw.length - 4)
+  const checksum = raw.subarray(raw.length - 4)
+  const expected = keccak_256(body).subarray(0, 4)
+  for (let j = 0; j < 4; j++) if (checksum[j] !== expected[j]) return null
+  const spend = raw.subarray(i, i + 32)
+  return spend.length === 32 ? bytesToHex(spend) : null
+}

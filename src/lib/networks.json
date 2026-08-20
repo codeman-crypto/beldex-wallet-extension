@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Built-in defaults per network. These are overridable per-key from .env (see .env.example)",
+    "— .env wins, so a developer pointing at a local LWS never has to edit this file.",
+    "",
+    "There is deliberately no `hosts` list here: webpack derives the manifest's host_permissions",
+    "from the resolved URLs below (origin, port stripped — Chrome match patterns forbid ports),",
+    "so an endpoint change can never leave the extension without permission to fetch it."
+  ],
+  "mainnet": {
+    "nettype": 0,
+    "label": "Mainnet",
+    "lws": "https://lwsapi.beldex.io",
+    "daemonRpc": "https://explorer.beldex.io/json_rpc",
+    "bnsLookup": "https://explorer.beldex.io/api/bnslookup",
+    "explorerTx": "https://explorer.beldex.io/tx/",
+    "priceUrl": "https://api.coingecko.com/api/v3/simple/price?ids=beldex&vs_currencies=usdt,usd",
+    "showFiat": true
+  },
+  "testnet": {
+    "nettype": 1,
+    "label": "Testnet",
+    "lws": "https://lwsapi.beldex.dev",
+    "daemonRpc": "http://209.126.86.93:29091/json_rpc",
+    "bnsLookup": "https://testnet.beldex.dev/api/bnslookup",
+    "explorerTx": "https://testnet.beldex.dev/tx/",
+    "priceUrl": "https://api.coingecko.com/api/v3/simple/price?ids=beldex&vs_currencies=usdt,usd",
+    "showFiat": true
+  }
+}

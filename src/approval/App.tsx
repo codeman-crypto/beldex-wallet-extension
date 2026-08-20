@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react'
 import { sendToBackground } from '../lib/messages'
 import { ConnectApprovalCard } from '../popup/views/ConnectApprovalCard'
 import { SendApprovalCard, SendReqParams } from '../popup/views/SendApprovalCard'
+import { SignApprovalCard, SignReqParams } from '../popup/views/SignApprovalCard'
 
 type Phase = 'loading' | 'expired' | 'unlock' | 'confirm'
 
@@ -88,7 +89,9 @@ export function ApprovalApp() {
 
       {phase === 'unlock' && pending && (
         <>
-          <h2>{pending.method === 'bdx_sendTransaction' ? 'Transaction Request' : 'Connection Request'}</h2>
+          <h2>{pending.method === 'bdx_sendTransaction' ? 'Transaction Request'
+            : pending.method === 'bdx_signMessage' ? 'Signature Request'
+            : 'Connection Request'}</h2>
           <div className="origin">{pending.origin}</div>
           <div className="card">
             <p className="muted">
@@ -112,6 +115,14 @@ export function ApprovalApp() {
             reqId={reqId}
             origin={pending.origin}
             params={pending.params as unknown as SendReqParams}
+            walletName={walletName}
+            onDone={() => window.close()}
+          />
+        ) : pending.method === 'bdx_signMessage' ? (
+          <SignApprovalCard
+            reqId={reqId}
+            origin={pending.origin}
+            params={pending.params as unknown as SignReqParams}
             walletName={walletName}
             onDone={() => window.close()}
           />
