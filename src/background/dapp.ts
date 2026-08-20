@@ -22,6 +22,8 @@ import { sessionStore } from '../lib/sessionStore'
 import {
   DappEvent, DappMethod, DappPortMessage, DappPortRequest, ERR, PORT_NAME, PROTOCOL_VERSION
 } from '../lib/dappProtocol'
+// Pure arithmetic (@noble), no WASM and no window — safe in the service worker.
+import { addressSpendKey, verifyMessage } from '../lib/signMessage'
 import type { WalletSecrets } from '../lib/messages'
 
 // Storage keys shared with background/index.ts — keep in sync.
@@ -45,6 +47,12 @@ type GrantMap = Record<string, Grant>
 interface PendingMeta { origin: string; method: DappMethod; createdAt: number; params?: object }
 
 interface PendingLive extends PendingMeta {
+  /** The id the PAGE generated for this request. Replies must echo it: the
+   *  inpage provider matches responses against its own pending map, so a reply
+   *  carrying our internal approval id is silently dropped and the dapp's
+   *  promise hangs forever. Not the same value as the approval reqId, which is
+   *  wallet-internal and used for the approval UI / storage.session. */
+  pageReqId: string
   respond: (msg: DappPortMessage) => void
   timer: ReturnType<typeof setTimeout>
   windowId?: number
@@ -79,7 +87,7 @@ async function setGrants(g: GrantMap): Promise<void> {
 }
 
 function nettype(): 'mainnet' | 'testnet' {
-  return CONFIG.NETTYPE === 0 ? 'mainnet' : 'testnet'
+  return CONFIG.NETWORK
 }
 
 function err(code: number, message: string): { code: number; message: string } {
@@ -291,6 +299,29 @@ export function validateSendParams(params: unknown): { ok: true; send: Validated
   return { ok: true, send: { to: (p.to as string).trim(), priority, sweep, ...(amount !== undefined ? { amount } : {}) } }
 }
 
+/** Longest message a site may ask the user to sign. Long enough for an
+ *  ownership challenge or a login statement, short enough that the approval
+ *  card can show ALL of it — the user must never approve text they cannot see. */
+const MAX_SIGN_MESSAGE = 512
+
+/** Validate bdx_signMessage params (PROTOCOL.md §4.6). Control characters are
+ *  rejected so a message cannot hide its real content behind newlines or
+ *  terminal escapes in the approval card. */
+export function validateSignParams(params: unknown): { ok: true; message: string } | { ok: false; error: string } {
+  const p = (params ?? {}) as Record<string, unknown>
+  if (typeof p.message !== 'string' || p.message.length === 0) {
+    return { ok: false, error: 'invalid field "message" (non-empty string required)' }
+  }
+  if (p.message.length > MAX_SIGN_MESSAGE) {
+    return { ok: false, error: `invalid field "message" (max ${MAX_SIGN_MESSAGE} characters)` }
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(p.message)) {
+    return { ok: false, error: 'invalid field "message" (control characters are not allowed)' }
+  }
+  return { ok: true, message: p.message }
+}
+
 // One in-flight send per wallet, shared by the panel's own send flow and dapp
 // sends (two concurrent constructions could pick the same outputs → double
 // spend). Held in storage.session with a stale-out so a crashed signer can't
@@ -353,7 +384,8 @@ async function removePending(reqId: string): Promise<PendingMeta | null> {
 function settlePending(reqId: string, msg: { result?: unknown; error?: { code: number; message: string } }): void {
   const live = pendingLive.get(reqId)
   if (live) {
-    try { live.respond({ id: reqId, ...msg }) } catch { /* port gone */ }
+    // Echo the PAGE's request id, never the internal approval id.
+    try { live.respond({ id: live.pageReqId, ...msg }) } catch { /* port gone */ }
   }
 }
 
@@ -519,7 +551,7 @@ async function handleMethod(
       for (const p of pendingLive.values()) {
         if (p.origin === origin) return fail(err(ERR.INTERNAL, 'approval already pending'))
       }
-      await queueApproval(origin, req.method, undefined, respond, tabId)
+      await queueApproval(origin, req.method, undefined, req.id, respond, tabId)
       return // settled later by DAPP_APPROVE / DAPP_REJECT / window close / TTL
     }
 
@@ -534,8 +566,40 @@ async function handleMethod(
         if (p.method === 'bdx_sendTransaction') return fail(err(ERR.INTERNAL, 'transaction already in progress'))
         if (p.origin === origin) return fail(err(ERR.INTERNAL, 'approval already pending'))
       }
-      await queueApproval(origin, req.method, v.send as unknown as object, respond, tabId)
+      await queueApproval(origin, req.method, v.send as unknown as object, req.id, respond, tabId)
       return // settled by DAPP_COMPLETE / DAPP_FAIL / DAPP_REJECT / close / TTL
+    }
+
+    case 'bdx_signMessage': {
+      const activeId = await grantedActiveId(origin)
+      if (!activeId) return fail(err(ERR.UNAUTHORIZED, 'origin not connected'))
+      const v = validateSignParams(req.params)
+      if (!v.ok) return fail(err(ERR.INVALID_PARAMS, v.error))
+      const session = await getSession()
+      if (!session || session.walletId !== activeId) return fail(err(ERR.LOCKED, 'wallet locked'))
+      for (const p of pendingLive.values()) {
+        if (p.origin === origin) return fail(err(ERR.INTERNAL, 'approval already pending'))
+      }
+      await queueApproval(origin, req.method, { message: v.message }, req.id, respond, tabId)
+      return // settled by DAPP_SIGN_COMPLETE / DAPP_FAIL / DAPP_REJECT / close / TTL
+    }
+
+    case 'bdx_verifyMessage': {
+      // Public and keyless (spec §4.7): pure signature arithmetic, no grant,
+      // no approval, nothing about this wallet is revealed.
+      const p = (req.params ?? {}) as { message?: unknown; address?: unknown; signature?: unknown }
+      if (typeof p.message !== 'string' || !p.message
+        || typeof p.address !== 'string' || typeof p.signature !== 'string') {
+        return fail(err(ERR.INVALID_PARAMS, 'message, address and signature are required'))
+      }
+      if (!readAllowed(origin)) return fail(err(ERR.INTERNAL, 'rate limited — slow down'))
+      const spend = addressSpendKey(p.address)
+      if (!spend) return fail(err(ERR.INVALID_PARAMS, 'invalid field "address"'))
+      try {
+        return reply({ valid: verifyMessage(p.message, spend, p.signature) })
+      } catch {
+        return reply({ valid: false })
+      }
     }
 
     default:
@@ -547,6 +611,7 @@ async function queueApproval(
   origin: string,
   method: DappMethod,
   params: object | undefined,
+  pageReqId: string,
   respond: (msg: DappPortMessage) => void,
   tabId?: number
 ): Promise<void> {
@@ -561,7 +626,7 @@ async function queueApproval(
     if (live?.windowId !== undefined) chrome.windows.remove(live.windowId).catch(() => {})
     notifyPanels()
   }, APPROVAL_TTL_MS)
-  pendingLive.set(reqId, { ...meta, respond, timer })
+  pendingLive.set(reqId, { ...meta, pageReqId, respond, timer })
   await persistPending(reqId, meta)
   await openApproval(reqId, tabId)
 }
@@ -645,6 +710,22 @@ export async function dappComplete(
   const all = (await sessionStore.get(PENDING_KEY))[PENDING_KEY] ?? {}
   if (!all[reqId]) return { ok: false, error: 'Request no longer pending' }
   settlePending(reqId, { result: { txHash: String(result.txHash), fee: String(result.fee ?? '0') } })
+  await removePending(reqId)
+  notifyPanels()
+  return { ok: true }
+}
+
+/** Message signed in the approval surface: hand the signature to the dapp.
+ *  The panel does the signing because the spend key lives in the session there,
+ *  never in this worker. */
+export async function dappSignComplete(
+  reqId: string, result: { signature: string; address: string }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const all = (await sessionStore.get(PENDING_KEY))[PENDING_KEY] ?? {}
+  if (!all[reqId]) return { ok: false, error: 'Request no longer pending' }
+  settlePending(reqId, {
+    result: { signature: String(result.signature), address: String(result.address) }
+  })
   await removePending(reqId)
   notifyPanels()
   return { ok: true }

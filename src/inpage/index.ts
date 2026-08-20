@@ -23,6 +23,26 @@ const pending = new Map<string, Pending>()
 const listeners = new Map<string, Set<(data: unknown) => void>>()
 const EVENTS: ReadonlySet<string> = new Set(DAPP_EVENTS)
 
+/**
+ * Request id. NOT crypto.randomUUID(): this file runs in the PAGE's context,
+ * and randomUUID is a secure-context-only API — on a plain http:// page (an
+ * explorer or dapp served over http from anything other than localhost) it is
+ * undefined, and calling it here would throw at document_start, taking
+ * window.beldex and the announce with it. getRandomValues has no such
+ * restriction. Ids are correlation handles, never secrets.
+ */
+function uuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  const b = new Uint8Array(16)
+  crypto.getRandomValues(b)
+  b[6] = (b[6]! & 0x0f) | 0x40 // version 4
+  b[8] = (b[8]! & 0x3f) | 0x80 // variant 1
+  const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
 window.addEventListener('message', ev => {
   if (ev.source !== window) return
   const msg = ev.data
@@ -60,7 +80,7 @@ const provider = Object.freeze({
   isBeldex: true as const,
   request(args: { method: DappMethod; params?: object }): Promise<unknown> {
     const method = args?.method
-    const id = crypto.randomUUID()
+    const id = uuid()
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject })
       window.postMessage(
@@ -91,7 +111,7 @@ const announce = () => {
   window.dispatchEvent(new CustomEvent(ANNOUNCE_PROVIDER_EVENT, {
     detail: Object.freeze({
       info: Object.freeze({
-        uuid: crypto.randomUUID(), // per page-load, for de-duplication only
+        uuid: uuid(), // per page-load, for de-duplication only
         name: 'Beldex Wallet',
         icon: ICON,
         rdns: 'io.beldex.wallet'
@@ -101,9 +121,9 @@ const announce = () => {
   }))
 }
 
-window.addEventListener(REQUEST_PROVIDER_EVENT, announce)
-announce()
-
+// Install the provider BEFORE announcing. Discovery is best-effort; the
+// window.beldex fallback (spec §2) must not be collateral damage if building or
+// dispatching the announce payload ever throws.
 // Compatibility fallback — never clobber another wallet (spec §2).
 if ((window as { beldex?: unknown }).beldex === undefined) {
   try {
@@ -112,3 +132,6 @@ if ((window as { beldex?: unknown }).beldex === undefined) {
     ;(window as { beldex?: unknown }).beldex = provider
   }
 }
+
+window.addEventListener(REQUEST_PROVIDER_EVENT, () => { try { announce() } catch { /* page's loss */ } })
+try { announce() } catch { /* provider is still on window */ }

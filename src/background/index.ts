@@ -18,7 +18,7 @@ import { wireToolbarOpensPanel } from '../lib/platform'
 import { sessionStore } from '../lib/sessionStore'
 import {
   initDappBridge, dappGetPending, dappFirstPending, dappApprove, dappReject,
-  dappComplete, dappFail, dappSendLockAcquire, dappSendLockRelease,
+  dappComplete, dappSignComplete, dappFail, dappSendLockAcquire, dappSendLockRelease,
   dappListOrigins, dappRevokeOrigin, dappActiveTabSite, dappNotifyLocked, dappNotifyUnlocked,
   dappNotifyWalletSwitched, dappNotifyBalanceFromInfo, dappCleanupWallet
 } from './dapp'
@@ -419,6 +419,11 @@ async function handle(req: BgRequest): Promise<BgResponse> {
       const r = await dappComplete(req.reqId, req.result)
       // Refresh the cache promptly so balanceChanged reaches connected dapps.
       syncOnce().catch(() => {})
+      return r.ok ? { ok: true } : { ok: false, error: r.error }
+    }
+
+    case 'DAPP_SIGN_COMPLETE': {
+      const r = await dappSignComplete(req.reqId, req.result)
       return r.ok ? { ok: true } : { ok: false, error: r.error }
     }
 

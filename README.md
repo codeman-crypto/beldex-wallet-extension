@@ -1,79 +1,183 @@
 # Beldex Wallet Extension
 
-A Manifest V3 browser-extension wallet for Beldex (BDX), built on the same WASM crypto core
-(`BeldexLibAppCpp_WASM`, from [`beldex-core-cpp`](https://github.com/Beldex-Coin/beldex-core-cpp))
-used by [`beldex-lws-frontend`](https://github.com/Beldex-Coin/beldex-lws-frontend), consumed via
-the `@bdxi/beldex-app-bridge` npm package.
+A non-custodial Manifest V3 browser-extension light wallet for Beldex (BDX). It runs as a
+**side panel** (Chrome/Edge/Brave) or **sidebar** (Firefox), with an optional full-screen tab
+mode, and exposes a `window.beldex` provider so Beldex dapps can connect with per-site approval.
+
+It is built on the same WASM crypto core (`BeldexLibAppCpp_WASM`, from
+[`beldex-core-cpp`](https://github.com/Beldex-Coin/beldex-core-cpp)) used by
+[`beldex-lws-frontend`](https://github.com/Beldex-Coin/beldex-lws-frontend), consumed via the
+`@bdxi/beldex-app-bridge` npm package.
 
 ## Architecture
 
 ```
-popup (window context)                     background service worker
-┌────────────────────────────┐             ┌───────────────────────────┐
-│ React UI                   │  messages   │ Encrypted vault           │
-│ WASM bridge (keys, tx      │◄───────────►│  PBKDF2 + AES-GCM         │
-│ construction, signing)     │             │  chrome.storage.local     │
-│ LWS client (fetch)         │             │ Session + auto-lock alarm │
-└──────────┬─────────────────┘             └───────────────────────────┘
-           │ view key only
-           ▼
-   Beldex LWS server  ──►  beldexd
-   (scans chain with view key; spend keys never leave the popup)
+panel.html (side panel / sidebar / ?tab=1)      background (SW / event page)
+┌──────────────────────────────────────┐        ┌──────────────────────────────┐
+│ React UI            src/popup/       │  msgs  │ src/background/index.ts      │
+│ WASM bridge — ONLY here              │◄──────►│ Encrypted vaults             │
+│   src/lib/bridge.ts, send.ts,        │        │   PBKDF2-600k + AES-256-GCM  │
+│   spent.ts                           │        │   chrome.storage.local       │
+│ LWS client          src/lib/lws.ts   │        │ Session in storage.session   │
+│ BNS lookup          src/lib/bns.ts   │        │ Alarms: auto-lock, 30s sync  │
+└──────────────┬───────────────────────┘        │ Brute-force backoff          │
+               │ view key only                  │ Dapp router src/background/  │
+               ▼                                │   dapp.ts (origin grants)    │
+     Beldex LWS  ──►  beldexd                   └──────────────┬───────────────┘
+     (scans chain with view key)                               │ port
+                                                               ▼
+                                          content.js (isolated) ◄─► inpage.js (MAIN world)
+                                                               window.beldex on the page
 ```
 
-- The WASM runs **only in the popup** — the Emscripten glue targets window contexts and MV3
-  service workers are ephemeral anyway.
+Key invariants:
+
+- **The WASM runs only in the panel.** The Emscripten glue targets window contexts and MV3
+  service workers are ephemeral, so all key handling and transaction signing happens there.
+  The background never loads WASM.
+- **Secrets at rest** are AES-256-GCM under PBKDF2-600k; decrypted secrets live only in
+  `chrome.storage.session` (memory-backed, never disk) while unlocked.
+- **Multi-wallet:** each wallet has its own independently-encrypted vault and password.
+  Switching wallets locks the session; legacy single-vault storage migrates automatically.
+- **The dapp layer holds no secrets.** `inpage.js` runs in hostile territory (the page can see
+  it), so the provider is frozen and every trust decision lives in the background router.
+- **All atomic math is BigInt** (`src/lib/money.ts`); floats are used only for fiat display.
 - The glue resolves the wasm at `/assets/BeldexLibAppCpp_WASM.wasm`; webpack copies it out of
-  `node_modules` into `dist/assets/` so it loads from the extension origin (satisfies MV3's
+  `node_modules` into the build dir so it loads from the extension origin (satisfies MV3's
   no-remote-code rule; CSP includes `wasm-unsafe-eval`).
+
+### The embind CSP patch (important)
+
+The published WASM glue uses `new Function` (embind's `createNamedFunction` and
+`craftInvokerFunction`), which MV3's CSP forbids — `unsafe-eval` is never grantable, only
+`wasm-unsafe-eval`. `patches/@bdxi+beldex-app-bridge+3.0.0.patch`, applied by `patch-package`
+on `postinstall`, rewrites both with eval-free equivalents (what Emscripten's
+`-sDYNAMIC_EXECUTION=0` would emit). `test/bridge.test.mjs` runs under
+`node --disallow-code-generation-from-strings` — the same restriction — and exercises every
+bridge call the extension uses.
+
+**If `@bdxi/beldex-app-bridge` is ever bumped, the patch must be re-created and the tests
+re-run.** The long-term fix is for `beldex-core-cpp` to be rebuilt with `-sDYNAMIC_EXECUTION=0`.
 
 ## Setup
 
 ```bash
-npm install
-npm run build          # builds both browsers
-# or individually:
-npm run build:chrome   # -> dist/
-npm run build:firefox  # -> firefox/
+npm install                    # postinstall applies the embind patch — do not skip
+npm run build                  # mainnet, both browsers
+npm run build:chrome           # -> dist/
+npm run build:firefox          # -> firefox/
+npm run build:testnet          # testnet, both browsers
+npm run build:chrome:testnet   # -> dist-testnet/
+npm run build:firefox:testnet  # -> firefox-testnet/
+npm run typecheck
+npm test                       # CSP-strict bridge + dapp-protocol tests
+npx web-ext lint --source-dir=firefox --self-hosted
 ```
 
-- **Chrome/Edge/Brave:** `chrome://extensions` → enable Developer mode → **Load unpacked** → select `dist/`.
-- **Firefox:** `about:debugging` → This Firefox → **Load Temporary Add-on** → select `firefox/manifest.json`.
+- **Chrome/Edge/Brave:** `chrome://extensions` → enable Developer mode → **Load unpacked** → select `dist/` (or `dist-testnet/`).
+- **Firefox:** `about:debugging` → This Firefox → **Load Temporary Add-on** → select `firefox/manifest.json` (or `firefox-testnet/manifest.json`).
 
-Both targets share the same `panel.js`/`background.js`; only the manifest differs
-(Chrome `side_panel` vs Firefox `sidebar_action` + a `gecko` id). The panel-open and
-panel-close differences are handled at runtime in `src/lib/platform.ts`.
+Both targets share identical `panel.js` / `background.js` / `content.js` / `inpage.js`; only the
+manifest differs (Chrome `side_panel` vs Firefox `sidebar_action` + a `gecko` id). Platform
+divergence for panel open/close is isolated in `src/lib/platform.ts`.
 
-**Before first use:** set `LWS_URL` in `src/lib/config.ts` to a running Beldex light-wallet
-server (the backend beldex-lws-frontend uses), and narrow `host_permissions` in
-`public/manifest.chrome.json` / `public/manifest.firefox.json` to that host.
+### Network selection and `.env`
 
-## What works / what's stubbed
+The chain is a **build-time** choice, not a runtime toggle: there is no in-app network switcher,
+and only the selected network's endpoints are present in the bundle, so a build can only ever
+reach the chain it was compiled for.
+
+```bash
+cp .env.example .env       # .env is gitignored; the template is committed
+```
+
+Config resolves in this order, each layer overriding the one before:
+
+1. `src/lib/networks.json` — the checked-in defaults for each network.
+2. `.env` — local overrides (`BDX_NETWORK`, `TESTNET_LWS_URL`, `MAINNET_PRICE_URL`, …).
+   `process.env` beats `.env`, so CI can override without writing a file.
+3. `--env network=…` on the webpack CLI — what the `:testnet` npm scripts pass.
+
+`webpack.config.js` merges those, hands the result to `DefinePlugin` as `__BDX_NET__` (read by
+`src/lib/config.ts`), and **derives** the manifest's `host_permissions` from the resolved URLs.
+So pointing `TESTNET_LWS_URL` at a local server in `.env` automatically grants permission to
+reach it — endpoints and permissions can't drift apart, which is the usual cause of "the fetch
+fails and nothing says why". Ports are stripped from the derived patterns, since Chrome rejects
+a manifest whose host permissions contain one.
+
+Testnet builds additionally get a distinct extension name (`Beldex Wallet (Testnet)`) and Firefox
+add-on id — so testnet and mainnet can be installed side by side with separate storage — plus an
+amber **TESTNET** badge in the panel header.
+
+| | mainnet | testnet |
+|---|---|---|
+| `NETTYPE` | 0 | 1 |
+| LWS | `lwsapi.beldex.io` | `lwsapi.beldex.dev` |
+| Explorer / BNS | `explorer.beldex.io` | `testnet.beldex.dev` |
+| Daemon JSON-RPC | `explorer.beldex.io` | `209.126.86.93:29091` |
+
+> **Two caveats on the testnet defaults.** The daemon RPC is plaintext `http://` — extension
+> pages are secure contexts, so the browser will block that fetch as mixed content (the build
+> prints a warning). It's unused today, but it needs to be `https` before anything calls it.
+> And `SHOW_FIAT` is on for testnet, which quotes the *mainnet* BDX price next to coins that have
+> no value; set `TESTNET_SHOW_FIAT=false` in `.env` if that's misleading in your context.
+
+## Features
 
 | Area | Status |
 |---|---|
-| Create / restore wallet (25-word seed) | wired via WASM bridge |
-| Encrypted vault, unlock/lock, auto-lock | implemented (PBKDF2 600k + AES-GCM) |
-| Balance / sync status via LWS | wired, but **naive** — see below |
-| Send (incl. flash priority 5) | wired via `async__send_funds`; **verify arg shape** against `@bdxi/beldex-sendfunds-utils` |
-| Spent-output detection | **TODO** — compute key images client-side (`generateKeyImage`) and filter `spent_outputs`; see `@bdxi/beldex-keyimage-cache` |
-| BNS name resolution | stub in `lws.ts` (`bns_resolve` via daemon JSON-RPC); record decryption TODO |
-| Receive view / QR, subaddresses, fiat rates | not started |
+| Create / restore wallet (25-word seed), seed-confirmation quiz | done |
+| Multi-wallet, per-wallet vault + password, auto-migration | done |
+| Encrypted vault, unlock/lock, auto-lock alarm, brute-force backoff | done |
+| Dashboard: balance (total/unlocked/locked), hide-balance, BDX→USDT price, sync height | done |
+| Send, incl. BNS name resolution, review modal, live progress, flash priority (5) | done |
+| Spent-output detection (client-side key images, filters LWS false positives) | done — `src/lib/spent.ts` |
+| History: filters, local pending-tx tracking (24h TTL), details modal, explorer link | done |
+| Receive: QR with logo, integrated ("unique") addresses with local labels | done |
+| Settings: reveal seed/view/spend key, change password, rename, auto-lock, delete | done |
+| Dapp bridge: `window.beldex` provider, per-origin grants, connect + send approval UI | done |
+| Incoming-funds notifications (with optional amount hiding) | done |
+| `bdx_signMessage` / `bdx_verifyMessage` | declared in the protocol, **not implemented** — returns `METHOD_NOT_FOUND` |
+| Subaddresses | **not supported by design** — the LWS cannot scan them (see below) |
+| Per-tx fee in history | not available — LWS doesn't return it; could be cached at send time |
 
-## Must-verify before production
+### Dapp bridge
 
-1. **Hard-fork currency of the WASM**: confirm the published `@bdxi/beldex-app-bridge` build
-   constructs CLSAG + Bulletproofs+ transactions valid for current mainnet consensus
-   (`BULLETPROOF_PLUS = hf20` in `beldex/src/ringct`). Test on testnet; rebuild
-   `beldex-core-cpp` if stale.
-2. **Send-funds callback shapes** in `src/lib/send.ts` — copied from the MyMonero v2 convention;
-   diff against `beldex-lws-frontend`'s actual usage.
-3. **KDF hardening**: consider argon2-browser instead of PBKDF2.
-4. **Security review**: seed display flow, clipboard handling, phishing protection, and the
-   privacy disclosure that the LWS sees your view key (it can see incoming funds, not spend).
+Implements the `bdx-web3js` wire protocol (`PROTOCOL.md` v1). Discovery uses an EIP-6963-style
+`beldex:requestProvider` / `beldex:announceProvider` handshake. Reads (`bdx_getState`,
+`bdx_getNetwork`, `bdx_resolveBns`) are open; `bdx_getAddress` / `bdx_getBalance` require a
+grant; `bdx_connect` and `bdx_sendTransaction` raise a user approval — rendered in-panel when
+the panel is open, otherwise in a MetaMask-style popup anchored top-right. Sends take a global
+single-flight lock shared with the panel's own send flow, and the approval card shows a real
+WASM-computed fee estimate. Connected sites are listed (and revocable) in Settings and in a
+bottom site bar.
+
+## Known limitations / open items
+
+1. **LWS trust & privacy.** The server sees your view key: it can observe incoming funds but
+   can never spend. `generated_locally: true` is sent even on restore, so a never-before-seen
+   address may not get a full history rescan — wiring `IMPORT_WALLET_REQUEST` is a TODO.
+2. **BNS integrity.** Resolution fully trusts `explorer.beldex.io`; a compromised endpoint could
+   substitute an address. Mitigation is the full-address review modal (threat model in
+   `src/lib/bns.ts`). Buying BNS names would require extending `beldex-core-cpp` — the WASM
+   contains the code but exposes no entry point.
+3. **Subaddresses** aren't supported by the MyMonero-lineage core + LWS combination; funds sent
+   to one would be invisible. Integrated addresses are the deliberate substitute. Proper support
+   needs LWS-side subaddress registration (à la monero-lws) first.
+4. **Firefox < 115** falls back to an in-memory session (`src/lib/sessionStore.ts`) — it works,
+   but sessions die with the event page and the storage-driven panel lock doesn't fire. 115+ is
+   the real baseline; the manifest's hard `strict_min_version` was removed for testing and
+   **should be restored before store submission**.
+5. **AMO data-collection declaration** is `["none"]` — defensible (the view key goes to the
+   app's own backend), but confirm against Mozilla policy before publishing.
+6. **Verify before mainnet ship.** Send end-to-end on testnet after any core/bridge bump —
+   CLSAG since HF15, Bulletproofs+ since HF20.
 
 ## Trust model
 
 Light-wallet architecture (MyMonero model): the server scans the chain with your **view key**.
 It can observe incoming transactions but can never spend funds — spend keys exist only inside
-the popup, encrypted at rest with your password.
+the panel page, encrypted at rest with your password. Dapps never receive keys of any kind;
+they get an address only after you approve the origin, and every send is user-confirmed.
+
+See `HANDOFF.md` for build conventions, security-review history, and per-file detail.

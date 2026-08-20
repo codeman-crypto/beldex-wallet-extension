@@ -37,6 +37,7 @@ export type BgRequest =
   | { type: 'DAPP_APPROVE'; reqId: string }
   | { type: 'DAPP_REJECT'; reqId: string }
   | { type: 'DAPP_COMPLETE'; reqId: string; result: { txHash: string; fee: string } }
+  | { type: 'DAPP_SIGN_COMPLETE'; reqId: string; result: { signature: string; address: string } }
   | { type: 'DAPP_FAIL'; reqId: string }
   | { type: 'SEND_LOCK_ACQUIRE' } // global one-send-at-a-time (panel + dapp)
   | { type: 'SEND_LOCK_RELEASE' }

@@ -9,14 +9,20 @@
     "build:chrome": "webpack --mode=production",
     "build:firefox": "webpack --mode=production --env firefox",
     "package": "npm run build && bash scripts/package.sh",
+    "build:testnet": "npm run build:chrome:testnet && npm run build:firefox:testnet",
+    "build:chrome:testnet": "webpack --mode=production --env network=testnet",
+    "build:firefox:testnet": "webpack --mode=production --env firefox --env network=testnet",
     "dev": "webpack --mode=development --watch",
+    "dev:testnet": "webpack --mode=development --env network=testnet --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --disallow-code-generation-from-strings --test test/*.test.mjs"
+    "test": "node --disallow-code-generation-from-strings --experimental-strip-types --test test/*.test.mjs"
   },
   "dependencies": {
     "@bdxi/beldex-app-bridge": "^3.0.1",
     "@fontsource/michroma": "^5.2.8",
     "@fontsource/space-mono": "^5.2.9",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "buffer": "^6.0.3",
     "path-browserify": "^1.0.1",
     "process": "^0.11.10",

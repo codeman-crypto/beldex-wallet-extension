@@ -5,6 +5,7 @@ import { Unlock } from './views/Unlock'
 import { Dashboard } from './views/Dashboard'
 import { ConnectApprovalCard } from './views/ConnectApprovalCard'
 import { SendApprovalCard, SendReqParams } from './views/SendApprovalCard'
+import { SignApprovalCard, SignReqParams } from './views/SignApprovalCard'
 
 interface PendingReq { reqId: string; origin: string; method: string; params?: object }
 
@@ -80,6 +81,14 @@ export function App() {
             reqId={pendingReq.reqId}
             origin={pendingReq.origin}
             params={pendingReq.params as unknown as SendReqParams}
+            walletName={walletName}
+            onDone={done}
+          />
+        ) : pendingReq.method === 'bdx_signMessage' ? (
+          <SignApprovalCard
+            reqId={pendingReq.reqId}
+            origin={pendingReq.origin}
+            params={pendingReq.params as unknown as SignReqParams}
             walletName={walletName}
             onDone={done}
           />
